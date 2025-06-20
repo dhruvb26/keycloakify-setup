@@ -88,9 +88,9 @@ fn default_embed_sources() -> Vec<EmbedSource> {
 /// - `crop_image` controls whether to crop the file's images to the segment's bounding box.
 ///   The cropped image will be stored in the segment's `image` field. Use `All` to always crop,
 ///   or `Auto` to only crop when needed for post-processing.
-/// - `html` is the HTML output for the segment, generated either through huerstics (`Auto`) or using Chunkr fine-tuned models (`LLM`)
+/// - `html` is the HTML output for the segment, generated either through heuristic (`Auto`) or using Chunkr fine-tuned models (`LLM`)
 /// - `llm` is the LLM-generated output for the segment, this uses off-the-shelf models to generate a custom output for the segment
-/// - `markdown` is the Markdown output for the segment, generated either through huerstics (`Auto`) or using Chunkr fine-tuned models (`LLM`)
+/// - `markdown` is the Markdown output for the segment, generated either through heuristic (`Auto`) or using Chunkr fine-tuned models (`LLM`)
 /// - `embed_sources` defines which content sources will be included in the chunk's embed field and counted towards the chunk length.
 ///   The array's order determines the sequence in which content appears in the embed field (e.g., [Markdown, LLM] means Markdown content
 ///   is followed by LLM content). This directly affects what content is available for embedding and retrieval.
@@ -101,7 +101,6 @@ pub struct AutoGenerationConfig {
     #[serde(default = "default_auto_generation_strategy")]
     #[schema(default = "Auto")]
     pub html: GenerationStrategy,
-    /// Prompt for the LLM mode
     pub llm: Option<String>,
     #[serde(default = "default_auto_generation_strategy")]
     #[schema(default = "Auto")]
@@ -109,6 +108,10 @@ pub struct AutoGenerationConfig {
     #[serde(default = "default_embed_sources")]
     #[schema(value_type = Vec<EmbedSource>, default = "[Markdown]")]
     pub embed_sources: Vec<EmbedSource>,
+    /// Use the full page image as context for LLM generation
+    #[serde(default)]
+    #[schema(default = false)]
+    pub extended_context: bool,
 }
 
 fn default_cropping_strategy() -> CroppingStrategy {
@@ -135,6 +138,7 @@ impl Default for AutoGenerationConfig {
             markdown: GenerationStrategy::Auto,
             crop_image: default_cropping_strategy(),
             embed_sources: default_embed_sources(),
+            extended_context: default_extended_context(),
         }
     }
 }
@@ -165,6 +169,10 @@ pub struct LlmGenerationConfig {
     #[serde(default = "default_embed_sources")]
     #[schema(value_type = Vec<EmbedSource>, default = "[Markdown]")]
     pub embed_sources: Vec<EmbedSource>,
+    /// Use the full page image as context for LLM generation
+    #[serde(default = "default_extended_context")]
+    #[schema(default = false)]
+    pub extended_context: bool,
 }
 
 impl Default for LlmGenerationConfig {
@@ -175,6 +183,7 @@ impl Default for LlmGenerationConfig {
             markdown: GenerationStrategy::LLM,
             crop_image: default_cropping_strategy(),
             embed_sources: default_embed_sources(),
+            extended_context: default_extended_context(),
         }
     }
 }
@@ -184,9 +193,9 @@ impl Default for LlmGenerationConfig {
 /// - `crop_image` controls whether to crop the file's images to the segment's bounding box.
 ///   The cropped image will be stored in the segment's `image` field. Use `All` to always crop,
 ///   or `Auto` to only crop when needed for post-processing.
-/// - `html` is the HTML output for the segment, generated either through huerstics (`Auto`) or using Chunkr fine-tuned models (`LLM`)
+/// - `html` is the HTML output for the segment, generated either through heuristic (`Auto`) or using Chunkr fine-tuned models (`LLM`)
 /// - `llm` is the LLM-generated output for the segment, this uses off-the-shelf models to generate a custom output for the segment
-/// - `markdown` is the Markdown output for the segment, generated either through huerstics (`Auto`) or using Chunkr fine-tuned models (`LLM`)
+/// - `markdown` is the Markdown output for the segment, generated either through heuristic (`Auto`) or using Chunkr fine-tuned models (`LLM`)
 /// - `embed_sources` defines which content sources will be included in the chunk's embed field and counted towards the chunk length.
 ///   The array's order determines the sequence in which content appears in the embed field (e.g., [Markdown, LLM] means Markdown content
 ///   is followed by LLM content). This directly affects what content is available for embedding and retrieval.
@@ -194,17 +203,21 @@ pub struct PictureGenerationConfig {
     #[serde(default = "default_picture_cropping_strategy")]
     #[schema(value_type = PictureCroppingStrategy, default = "All")]
     pub crop_image: PictureCroppingStrategy,
-    #[serde(default = "default_llm_generation_strategy")]
-    #[schema(default = "LLM")]
+    #[serde(default = "default_auto_generation_strategy")]
+    #[schema(default = "Auto")]
     pub html: GenerationStrategy,
     /// Prompt for the LLM model
     pub llm: Option<String>,
-    #[serde(default = "default_llm_generation_strategy")]
-    #[schema(default = "LLM")]
+    #[serde(default = "default_auto_generation_strategy")]
+    #[schema(default = "Auto")]
     pub markdown: GenerationStrategy,
     #[serde(default = "default_embed_sources")]
     #[schema(value_type = Vec<EmbedSource>, default = "[Markdown]")]
     pub embed_sources: Vec<EmbedSource>,
+    /// Use the full page image as context for LLM generation
+    #[serde(default = "default_extended_context")]
+    #[schema(default = false)]
+    pub extended_context: bool,
 }
 
 impl Default for PictureGenerationConfig {
@@ -215,8 +228,13 @@ impl Default for PictureGenerationConfig {
             markdown: GenerationStrategy::Auto,
             crop_image: default_picture_cropping_strategy(),
             embed_sources: default_embed_sources(),
+            extended_context: default_extended_context(),
         }
     }
+}
+
+fn default_extended_context() -> bool {
+    false
 }
 
 #[derive(

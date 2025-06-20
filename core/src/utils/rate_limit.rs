@@ -2,28 +2,95 @@ use crate::configs::llm_config::Config as LlmConfig;
 use crate::configs::throttle_config::Config as ThrottleConfig;
 use crate::utils::clients::get_redis_pool;
 use deadpool_redis::redis::{RedisError, RedisResult};
+#[cfg(feature = "rate_monitor")]
+use limit_lens::apis::{configuration::Configuration, rate_test_api};
+#[cfg(feature = "rate_monitor")]
+use limit_lens::models::CreateSessionRequest;
 use once_cell::sync::OnceCell;
+#[cfg(feature = "rate_monitor")]
+use rand::Rng;
+use std::collections::HashMap;
+use std::sync::RwLock;
 use std::time::Duration;
 
 pub static GENERAL_OCR_RATE_LIMITER: OnceCell<RateLimiter> = OnceCell::new();
 pub static GENERAL_OCR_TIMEOUT: OnceCell<Option<u64>> = OnceCell::new();
-pub static LLM_RATE_LIMITER: OnceCell<RateLimiter> = OnceCell::new();
-pub static LLM_OCR_TIMEOUT: OnceCell<Option<u64>> = OnceCell::new();
+pub static LLM_RATE_LIMITERS: OnceCell<RwLock<HashMap<String, Option<RateLimiter>>>> =
+    OnceCell::new();
+pub static LLM_TIMEOUT: OnceCell<Option<u64>> = OnceCell::new();
 pub static SEGMENTATION_RATE_LIMITER: OnceCell<RateLimiter> = OnceCell::new();
 pub static SEGMENTATION_TIMEOUT: OnceCell<Option<u64>> = OnceCell::new();
 pub static TOKEN_TIMEOUT: OnceCell<u64> = OnceCell::new();
 
+#[derive(Clone)]
 pub struct RateLimiter {
     tokens_per_second: f32,
     bucket_name: String,
+    #[cfg(feature = "rate_monitor")]
+    session_id: Option<String>,
+    #[cfg(feature = "rate_monitor")]
+    limit_lens_config: Option<Configuration>,
 }
 
 impl RateLimiter {
     pub fn new(tokens_per_second: f32, bucket_name: &str) -> Self {
+        #[cfg(feature = "rate_monitor")]
+        {
+            let random_suffix: String = rand::thread_rng().gen_range(100000..1000000).to_string();
+
+            let session_name = format!("{}-{}", bucket_name, random_suffix);
+            let config = Configuration::default();
+
+            match Self::create_monitoring_session(&config, &session_name) {
+                Ok(session_id) => {
+                    println!(
+                        "Created rate monitoring session for bucket '{}': {}",
+                        bucket_name, session_id
+                    );
+                    RateLimiter {
+                        tokens_per_second,
+                        bucket_name: bucket_name.to_string(),
+                        session_id: Some(session_id),
+                        limit_lens_config: Some(config),
+                    }
+                }
+                Err(e) => {
+                    println!(
+                        "Failed to create rate monitoring session for bucket '{}': {}",
+                        bucket_name, e
+                    );
+                    RateLimiter {
+                        tokens_per_second,
+                        bucket_name: bucket_name.to_string(),
+                        session_id: None,
+                        limit_lens_config: None,
+                    }
+                }
+            }
+        }
+
+        #[cfg(not(feature = "rate_monitor"))]
         RateLimiter {
             tokens_per_second,
             bucket_name: bucket_name.to_string(),
         }
+    }
+
+    #[cfg(feature = "rate_monitor")]
+    fn create_monitoring_session(
+        config: &Configuration,
+        session_name: &str,
+    ) -> Result<String, String> {
+        let session_request = CreateSessionRequest {
+            name: Some(session_name.to_string().into()),
+        };
+
+        futures::executor::block_on(async {
+            rate_test_api::create_test_session(config, session_request)
+                .await
+                .map(|session| session.id)
+                .map_err(|e| format!("Failed to create monitoring session: {}", e))
+        })
     }
 
     pub async fn acquire_token(&self) -> RedisResult<bool> {
@@ -80,7 +147,31 @@ impl RateLimiter {
             .invoke_async(&mut conn)
             .await?;
 
-        Ok(result == 1)
+        let acquired = result == 1;
+
+        #[cfg(feature = "rate_monitor")]
+        {
+            if acquired {
+                self.log_token_acquisition().await;
+            }
+        }
+
+        Ok(acquired)
+    }
+
+    #[cfg(feature = "rate_monitor")]
+    async fn log_token_acquisition(&self) {
+        if let (Some(config), Some(session_id)) = (&self.limit_lens_config, &self.session_id) {
+            match rate_test_api::receive_test_request(config, session_id).await {
+                Ok(_) => {}
+                Err(e) => {
+                    println!(
+                        "Failed to log token acquisition for bucket '{}': {}",
+                        self.bucket_name, e
+                    );
+                }
+            }
+        }
     }
 
     pub async fn acquire_token_with_timeout(&self, timeout: Duration) -> RedisResult<bool> {
@@ -108,14 +199,13 @@ fn create_general_ocr_timeout() -> Option<u64> {
     throttle_config.general_ocr_timeout
 }
 
-fn create_llm_rate_limiter(bucket_name: &str) -> RateLimiter {
-    let throttle_config = ThrottleConfig::from_env().unwrap();
-    RateLimiter::new(throttle_config.llm_ocr_rate_limit, bucket_name)
+fn create_llm_rate_limiter(bucket_name: &str, rate_limit: Option<f32>) -> Option<RateLimiter> {
+    rate_limit.map(|rate_limit| RateLimiter::new(rate_limit, bucket_name))
 }
 
-fn create_llm_ocr_timeout() -> Option<u64> {
+fn create_llm_timeout() -> Option<u64> {
     let throttle_config = ThrottleConfig::from_env().unwrap();
-    throttle_config.llm_ocr_timeout
+    throttle_config.llm_timeout
 }
 
 fn create_segmentation_rate_limiter(bucket_name: &str) -> RateLimiter {
@@ -134,20 +224,107 @@ pub fn init_throttle() {
     GENERAL_OCR_TIMEOUT.get_or_init(create_general_ocr_timeout);
     SEGMENTATION_RATE_LIMITER.get_or_init(|| create_segmentation_rate_limiter("segmentation"));
     SEGMENTATION_TIMEOUT.get_or_init(create_segmentation_timeout);
-    let llm_config = LlmConfig::from_env().unwrap();
-    let llm_ocr_url = llm_config.ocr_url.unwrap_or(llm_config.url);
-    let domain_name = llm_ocr_url
-        .split("://")
-        .nth(1)
-        .ok_or("Invalid URL format: missing protocol separator")
-        .and_then(|s| {
-            s.split('/')
-                .next()
-                .ok_or("Invalid URL format: missing domain")
+
+    LLM_RATE_LIMITERS.get_or_init(|| {
+        let mut llm_rate_limiters = HashMap::new();
+        let llm_config = LlmConfig::from_env().unwrap();
+        let throttle_config = ThrottleConfig::from_env().unwrap();
+        if let Some(llm_models) = llm_config.llm_models.as_ref() {
+            for model in llm_models {
+                llm_rate_limiters.insert(
+                    model.id.clone(),
+                    create_llm_rate_limiter(
+                        &model.id,
+                        model.rate_limit.or(throttle_config.llm_rate_limit),
+                    ),
+                );
+            }
+        }
+
+        RwLock::new(llm_rate_limiters)
+    });
+
+    LLM_TIMEOUT.get_or_init(create_llm_timeout);
+    print_rate_limits();
+}
+
+pub fn get_llm_rate_limiter(model_id: &str) -> Result<Option<RateLimiter>, String> {
+    LLM_RATE_LIMITERS
+        .get()
+        .ok_or_else(|| "LLM rate limiters not initialized".to_string())
+        .and_then(|limiters| {
+            let limiters_guard = limiters.read().unwrap();
+            if limiters_guard.contains_key(model_id) {
+                Ok(limiters_guard.get(model_id).cloned().flatten())
+            } else {
+                Err(format!("Model ID '{}' not found", model_id))
+            }
         })
-        .unwrap_or("localhost");
-    LLM_RATE_LIMITER.get_or_init(|| create_llm_rate_limiter(domain_name));
-    LLM_OCR_TIMEOUT.get_or_init(create_llm_ocr_timeout);
+}
+
+pub fn print_rate_limits() {
+    println!("=== Rate Limits (requests per second) ===");
+
+    // Print OCR rate limit
+    if let Some(limiter) = GENERAL_OCR_RATE_LIMITER.get() {
+        println!("General OCR: {:.2} requests/sec", limiter.tokens_per_second);
+
+        #[cfg(feature = "rate_monitor")]
+        if let Some(session_id) = &limiter.session_id {
+            println!("  Rate Monitoring Session: {}", session_id);
+        }
+    } else {
+        println!("General OCR: not initialized");
+    }
+
+    // Print Segmentation rate limit
+    if let Some(limiter) = SEGMENTATION_RATE_LIMITER.get() {
+        println!(
+            "Segmentation: {:.2} requests/sec",
+            limiter.tokens_per_second
+        );
+
+        #[cfg(feature = "rate_monitor")]
+        if let Some(session_id) = &limiter.session_id {
+            println!("  Rate Monitoring Session: {}", session_id);
+        }
+    } else {
+        println!("Segmentation: not initialized");
+    }
+
+    // Print LLM rate limits
+    if let Some(limiters) = LLM_RATE_LIMITERS.get() {
+        let limiters_guard = limiters.read().unwrap();
+        println!("LLM Models:");
+
+        if limiters_guard.is_empty() {
+            println!("  No LLM models configured");
+        } else {
+            for (model_id, limiter_option) in limiters_guard.iter() {
+                if let Some(limiter) = limiter_option {
+                    println!(
+                        "  {}: {:.2} requests/sec",
+                        model_id, limiter.tokens_per_second
+                    );
+
+                    #[cfg(feature = "rate_monitor")]
+                    if let Some(session_id) = &limiter.session_id {
+                        println!("    Rate Monitoring Session: {}", session_id);
+                    }
+                } else {
+                    println!("  {}: no rate limit", model_id);
+                }
+            }
+        }
+    } else {
+        println!("LLM Models: not initialized");
+    }
+
+    #[cfg(feature = "rate_monitor")]
+    println!("Rate monitoring enabled");
+
+    #[cfg(not(feature = "rate_monitor"))]
+    println!("Rate monitoring disabled");
 }
 
 #[cfg(test)]
@@ -157,6 +334,8 @@ mod tests {
     use crate::models::open_ai::{ContentPart, Message, MessageContent};
     use crate::utils::clients::initialize;
     use crate::utils::services::llm::open_ai_call;
+    use limit_lens::apis::{configuration::Configuration, rate_test_api};
+    use limit_lens::models::CreateSessionRequest;
     use rand::Rng;
     use std::error::Error;
     use std::fs;
@@ -165,16 +344,17 @@ mod tests {
     #[tokio::test]
     async fn test_acquire_token() {
         initialize().await;
-        let rate_limiter = create_llm_rate_limiter("test_bucket");
-        let result = rate_limiter.acquire_token().await;
+        let rate_limiter = create_llm_rate_limiter("test_bucket", Some(100.0));
+        let result = rate_limiter.unwrap().acquire_token().await;
         println!("result: {:?}", result);
     }
 
     #[tokio::test]
     async fn test_acquire_token_with_timeout() {
         initialize().await;
-        let rate_limiter = create_llm_rate_limiter("test_bucket");
+        let rate_limiter = create_llm_rate_limiter("test_bucket", Some(100.0));
         let result = rate_limiter
+            .unwrap()
             .acquire_token_with_timeout(Duration::from_secs(1))
             .await;
         println!("result: {:?}", result);
@@ -183,13 +363,10 @@ mod tests {
     #[tokio::test]
     async fn test_hit_rate_limit() {
         initialize().await;
-        let rate_limiter = create_llm_rate_limiter("test_bucket");
+        let rate_limiter = create_llm_rate_limiter("test_bucket", Some(100.0));
 
-        for _ in 0..2000 {
-            let _ = rate_limiter.acquire_token().await;
-        }
-
-        let result = rate_limiter.acquire_token().await.unwrap();
+        let unwrapped_limiter = rate_limiter.unwrap().clone();
+        let result = unwrapped_limiter.acquire_token().await.unwrap();
         println!("result: {:?}", result);
         assert!(!result, "Token request should fail after exhausting limit");
     }
@@ -197,12 +374,18 @@ mod tests {
     #[tokio::test]
     async fn test_hit_rate_limit_with_timeout() {
         initialize().await;
-        let rate_limiter = create_llm_rate_limiter("test_bucket");
+        let rate_limiter = create_llm_rate_limiter("test_bucket", Some(100.0));
 
-        let futures: Vec<_> = (0..2000).map(|_| rate_limiter.acquire_token()).collect();
+        let unwrapped_limiter = rate_limiter.unwrap().clone();
+        let futures: Vec<_> = (0..2000)
+            .map(|_| {
+                let limiter = unwrapped_limiter.clone();
+                async move { limiter.acquire_token().await }
+            })
+            .collect();
         let _ = futures::future::join_all(futures).await;
 
-        let result = rate_limiter
+        let result = unwrapped_limiter
             .acquire_token_with_timeout(Duration::from_secs(1))
             .await
             .unwrap();
@@ -217,9 +400,7 @@ mod tests {
     async fn send_request() -> Result<(), Box<dyn Error>> {
         initialize().await;
         let llm_config = LlmConfig::from_env().unwrap();
-        let url = llm_config.url;
-        let key = llm_config.key;
-        let model = llm_config.model;
+        let llm_model = llm_config.get_model(None).unwrap();
         let random_number = rand::thread_rng().gen_range(0..100000);
         let messages = vec![Message {
             role: "user".to_string(),
@@ -233,7 +414,17 @@ mod tests {
         }];
 
         let start_time = std::time::Instant::now();
-        match open_ai_call(url, key, model, messages, None, None, None).await {
+        match open_ai_call(
+            llm_model.provider_url,
+            llm_model.api_key,
+            llm_model.model,
+            messages,
+            None,
+            None,
+            None,
+        )
+        .await
+        {
             Ok(_) => Ok(()),
             Err(e) => {
                 println!(
@@ -249,9 +440,7 @@ mod tests {
     async fn send_request_with_retry() -> Result<(), Box<dyn Error>> {
         initialize().await;
         let llm_config = LlmConfig::from_env().unwrap();
-        let url = llm_config.url;
-        let key = llm_config.key;
-        let model = llm_config.model;
+        let llm_model = llm_config.get_model(None).unwrap();
         let random_number = rand::thread_rng().gen_range(0..100000);
         let messages = vec![Message {
             role: "user".to_string(),
@@ -267,9 +456,9 @@ mod tests {
         let start_time = std::time::Instant::now();
         loop {
             match open_ai_call(
-                url.clone(),
-                key.clone(),
-                model.clone(),
+                llm_model.provider_url.clone(),
+                llm_model.api_key.clone(),
+                llm_model.model.clone(),
                 messages.clone(),
                 None,
                 None,
@@ -397,6 +586,184 @@ mod tests {
             output_dir.join("total_time.txt"),
             total_time.as_secs().to_string(),
         )?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_rate_limiter_with_multiple_rates() -> Result<(), Box<dyn Error>> {
+        // Initialize the environment
+        initialize().await;
+
+        // Create configuration for limit-lens client
+        let config = Configuration::default();
+
+        // Define test scenarios with different rate limits
+        let scenarios = vec![1, 8, 10, 25, 50, 100, 200];
+        let test_duration_secs = 30;
+
+        for rate_limit in scenarios {
+            println!("Testing rate limit: {} requests per second", rate_limit);
+
+            // Create a new session for this rate limit test using the limit-lens crate
+            let session_request = CreateSessionRequest {
+                name: Some(format!("Rate Limiter Test - {} RPS", rate_limit).into()),
+            };
+
+            let session = rate_test_api::create_test_session(&config, session_request).await?;
+            let session_id = session.id;
+
+            // Create rate limiter with the current test scenario rate
+            let rate_limiter = RateLimiter::new(
+                rate_limit as f32,
+                &format!("limit_lens_test_{}", rate_limit),
+            );
+
+            // Calculate expected total requests
+            let expected_requests = rate_limit * test_duration_secs;
+
+            // Send requests for the duration
+            let start_time = std::time::Instant::now();
+            let mut futures: Vec<
+                tokio::task::JoinHandle<Result<(), Box<dyn Error + Send + Sync>>>,
+            > = Vec::new();
+
+            for i in 0..expected_requests {
+                let limiter = rate_limiter.clone();
+                let config = config.clone();
+                let session_id = session_id.clone();
+
+                let future = tokio::spawn(async move {
+                    // Try to acquire a token with a longer timeout that matches the test duration
+                    if let Ok(true) = limiter
+                        .acquire_token_with_timeout(Duration::from_secs(test_duration_secs as u64))
+                        .await
+                    {
+                        // Use the limit-lens crate to make the test request
+                        match rate_test_api::receive_test_request(&config, &session_id).await {
+                            Ok(_) => Ok(()),
+                            Err(e) => Err(e.to_string().into()),
+                        }
+                    } else {
+                        // Log token acquisition failures
+                        println!("Failed to acquire token for request {}", i);
+                        Ok(())
+                    }
+                });
+
+                futures.push(future);
+            }
+
+            // Wait for all futures to complete or the deadline to pass
+            futures::future::join_all(futures).await;
+
+            // Ensure we wait for the full test duration
+            let elapsed = start_time.elapsed();
+            if elapsed < Duration::from_secs(test_duration_secs as u64) {
+                tokio::time::sleep(Duration::from_secs(test_duration_secs as u64) - elapsed).await;
+            }
+
+            // Add small delay to ensure all requests are processed
+            tokio::time::sleep(Duration::from_millis(500)).await;
+
+            // Get metrics from limit-lens using the client crate
+            let metrics = rate_test_api::get_test_metrics(&config, &session_id).await?;
+
+            // Extract key metrics
+            let total_requests = metrics.total_requests as f64;
+            let requests_per_second = &metrics.requests_per_second;
+            let distribution = &metrics.request_distribution;
+
+            println!("total_requests: {:?}", total_requests);
+            println!("requests_per_second: {:?}", requests_per_second);
+            println!("distribution: {:?}", distribution);
+
+            // Validate metrics
+
+            // 1. Check total requests - should be within 10% of expected
+            let expected_requests_f64 = expected_requests as f64;
+            let total_requests_diff_pct =
+                ((total_requests - expected_requests_f64).abs() / expected_requests_f64) * 100.0;
+            assert!(
+                total_requests_diff_pct <= 10.0,
+                "Total requests {} differs from expected {} by more than 10% ({}%)",
+                total_requests,
+                expected_requests_f64,
+                total_requests_diff_pct
+            );
+
+            // 2. Check rate - should be within 30% of target rate
+            let rate_diff_pct =
+                ((requests_per_second - rate_limit as f64).abs() / rate_limit as f64) * 100.0;
+            println!("rate_diff_pct: {:?}", rate_diff_pct);
+            assert!(
+                rate_diff_pct <= 30.0,
+                "Measured rate {} differs from target {} by more than 30% ({}%)",
+                requests_per_second,
+                rate_limit,
+                rate_diff_pct
+            );
+
+            // 3. Check distribution - each second should have roughly the target rate of requests
+            // Skip first and last second which might be partial
+            let mut valid_periods = 0;
+            let mut total_deviation = 0.0;
+
+            for (i, period) in distribution.iter().enumerate() {
+                let count = period.count as f64;
+
+                // Skip first and last periods which might be partial
+                if i == 0 || i == distribution.len() - 1 {
+                    continue;
+                }
+
+                valid_periods += 1;
+                let deviation_pct = ((count - rate_limit as f64).abs() / rate_limit as f64) * 100.0;
+                total_deviation += deviation_pct;
+            }
+
+            // Average deviation across all complete periods should be within 25%
+            if valid_periods > 0 {
+                let avg_deviation = total_deviation / valid_periods as f64;
+                assert!(
+                    avg_deviation <= 25.0,
+                    "Average per-second deviation from target rate too high: {}%",
+                    avg_deviation
+                );
+            }
+
+            println!("✅ Rate limit {} RPS test passed:", rate_limit);
+            println!(
+                "   - Total requests: {} (expected ~{})",
+                total_requests, expected_requests
+            );
+            println!("   - Measured rate: {:.2} RPS", requests_per_second);
+            println!(
+                "   - Test duration: {:.2}s",
+                start_time.elapsed().as_secs_f64()
+            );
+
+            // Store results for this scenario
+            let dir_name = format!("output/limit_lens_test_{}_rps", rate_limit);
+            let output_dir = Path::new(&dir_name);
+            fs::create_dir_all(output_dir)?;
+
+            std::fs::write(
+                output_dir.join("metrics.json"),
+                serde_json::to_string_pretty(&metrics)?,
+            )?;
+
+            std::fs::write(
+                output_dir.join("summary.txt"),
+                format!(
+                    "Rate limit: {} RPS\nTotal requests: {}\nMeasured rate: {:.2} RPS\nTest duration: {:.2}s",
+                    rate_limit,
+                    total_requests,
+                    requests_per_second,
+                    start_time.elapsed().as_secs_f64()
+                ),
+            )?;
+        }
+
         Ok(())
     }
 }

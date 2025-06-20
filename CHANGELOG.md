@@ -5,6 +5,206 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.20.1](https://github.com/lumina-ai-inc/chunkr/compare/v1.20.0...v1.20.1) (2025-05-28)
+
+
+### Bug Fixes
+
+* **core:** Auto-fix clippy warnings ([#541](https://github.com/lumina-ai-inc/chunkr/issues/541)) ([00db663](https://github.com/lumina-ai-inc/chunkr/commit/00db66361022d5566f281badf327a73724da7922))
+* Update default for high resolution to true ([#536](https://github.com/lumina-ai-inc/chunkr/issues/536)) ([37cc757](https://github.com/lumina-ai-inc/chunkr/commit/37cc757ea41acce4a662a127bc141e77b56cda03))
+* Update robots.txt and blog post page, added sitemap, and removed toast from auth  ([#535](https://github.com/lumina-ai-inc/chunkr/issues/535)) ([3c8f827](https://github.com/lumina-ai-inc/chunkr/commit/3c8f82701d4ff40f932b24607da2dfd394f31e60))
+* Updated manual conversion from html to mkd to pandoc ([#539](https://github.com/lumina-ai-inc/chunkr/issues/539)) ([16cc847](https://github.com/lumina-ai-inc/chunkr/commit/16cc847f5728bd963bf8f367579721098190141c))
+
+
+### Performance Improvements
+
+* Improved llm analytics for extraction errors ([#538](https://github.com/lumina-ai-inc/chunkr/issues/538)) ([0302499](https://github.com/lumina-ai-inc/chunkr/commit/0302499f9942c3f2d0f3888ef419d7e2f6945394))
+
+## [1.20.0](https://github.com/lumina-ai-inc/chunkr/compare/v1.19.0...v1.20.0) (2025-05-28)
+
+
+### Features
+
+* Added blog pages to frontend - hooked up to Contentful CMS + env toggle for Blog page ([#531](https://github.com/lumina-ai-inc/chunkr/issues/531)) ([90d6dd8](https://github.com/lumina-ai-inc/chunkr/commit/90d6dd88aa5e6cd0bb0580185a6f4fbf3523e35d))
+
+## [1.19.0](https://github.com/lumina-ai-inc/chunkr/compare/v1.18.3...v1.19.0) (2025-05-25)
+
+
+### Features
+
+* Updated llm processing pipeline to be more robust ([#527](https://github.com/lumina-ai-inc/chunkr/issues/527)) ([1cfb9ca](https://github.com/lumina-ai-inc/chunkr/commit/1cfb9ca10801df57175e5ca148852a48cfea54ed))
+
+
+### Bug Fixes
+
+* **core:** Auto-fix clippy warnings ([#528](https://github.com/lumina-ai-inc/chunkr/issues/528)) ([7a972ed](https://github.com/lumina-ai-inc/chunkr/commit/7a972edddbecce0fcc10edc53669784f6755de89))
+* Rm extended context default and picture default ([8411eca](https://github.com/lumina-ai-inc/chunkr/commit/8411eca5dc9c66833cd431049ada51675d3ce81f))
+
+## [1.18.3](https://github.com/lumina-ai-inc/chunkr/compare/v1.18.2...v1.18.3) (2025-05-23)
+
+
+### Bug Fixes
+
+* Picture default strategy to LLM as default in the generation strategy for html and markdown ([#524](https://github.com/lumina-ai-inc/chunkr/issues/524)) ([e44126c](https://github.com/lumina-ai-inc/chunkr/commit/e44126c0387fb176f9ac6b027e3d6d0231102591))
+
+## [1.18.2](https://github.com/lumina-ai-inc/chunkr/compare/v1.18.1...v1.18.2) (2025-05-22)
+
+
+### Bug Fixes
+
+* Added file type attributes to span ([#520](https://github.com/lumina-ai-inc/chunkr/issues/520)) ([edd7d0d](https://github.com/lumina-ai-inc/chunkr/commit/edd7d0d140bd3482ce195e6f2243a9e67b4a5efa))
+* **core:** Auto-fix clippy warnings ([#518](https://github.com/lumina-ai-inc/chunkr/issues/518)) ([238f47f](https://github.com/lumina-ai-inc/chunkr/commit/238f47fdaf5d2e62d12448424d1018eb1803b8f8))
+
+## [1.18.1](https://github.com/lumina-ai-inc/chunkr/compare/v1.18.0...v1.18.1) (2025-05-22)
+
+
+### Bug Fixes
+
+* **core:** Auto-fix clippy warnings ([#516](https://github.com/lumina-ai-inc/chunkr/issues/516)) ([a938056](https://github.com/lumina-ai-inc/chunkr/commit/a938056779debec5357ad54b27bf5f0788382ba3))
+* Improved error handling and telemetry for segment processing ([#515](https://github.com/lumina-ai-inc/chunkr/issues/515)) ([2afc82e](https://github.com/lumina-ai-inc/chunkr/commit/2afc82e361387b51a5d5ab5f99cf74978917e9e1))
+
+## [1.18.0](https://github.com/lumina-ai-inc/chunkr/compare/v1.17.0...v1.18.0) (2025-05-21)
+
+
+### Features
+
+* **core:** Improved telemetry and added timeout around task processing to deal with long running processes ([#511](https://github.com/lumina-ai-inc/chunkr/issues/511)) ([bbe5913](https://github.com/lumina-ai-inc/chunkr/commit/bbe59130afffedbf5e2e29267afb1f6300918f67))
+
+
+### Bug Fixes
+
+* **core:** Auto-fix clippy warnings ([#512](https://github.com/lumina-ai-inc/chunkr/issues/512)) ([d9ecf60](https://github.com/lumina-ai-inc/chunkr/commit/d9ecf60f308cfe4607673bec172f8fc04d673135))
+
+## [1.17.0](https://github.com/lumina-ai-inc/chunkr/compare/v1.16.0...v1.17.0) (2025-05-20)
+
+
+### Features
+
+* Added Open telemetry support for better analytics ([#504](https://github.com/lumina-ai-inc/chunkr/issues/504)) ([7baa3d4](https://github.com/lumina-ai-inc/chunkr/commit/7baa3d4a03b5bd15c70dd73b00146adf6dfe7ba6))
+
+
+### Bug Fixes
+
+* **core:** Auto-fix clippy warnings ([#507](https://github.com/lumina-ai-inc/chunkr/issues/507)) ([a8c2e70](https://github.com/lumina-ai-inc/chunkr/commit/a8c2e70fd5db6503fb38273b611fb7ea16c00422))
+
+## [1.16.0](https://github.com/lumina-ai-inc/chunkr/compare/v1.15.1...v1.16.0) (2025-05-17)
+
+
+### Features
+
+* Added new frontend pdfs in new landing page ([#490](https://github.com/lumina-ai-inc/chunkr/issues/490)) ([bbaf911](https://github.com/lumina-ai-inc/chunkr/commit/bbaf911f205b2f81b723577155e6b5adff246a65))
+* Added span class instructions for all formula prompts ([#489](https://github.com/lumina-ai-inc/chunkr/issues/489)) ([5162f8f](https://github.com/lumina-ai-inc/chunkr/commit/5162f8f02fabe8eb0a0f99de1373c5295d3f9ddd))
+* Added task level analytics to usage page ([#498](https://github.com/lumina-ai-inc/chunkr/issues/498)) ([e4d63ff](https://github.com/lumina-ai-inc/chunkr/commit/e4d63ffb86c9d790c8bb13cf0cf71642d2f19e2b))
+* **core:** Improved error messages on task failure and retry only failed steps ([#496](https://github.com/lumina-ai-inc/chunkr/issues/496)) ([2e09e11](https://github.com/lumina-ai-inc/chunkr/commit/2e09e113f8cf0b0950a77c6954cc9ded2e85c434))
+
+
+### Bug Fixes
+
+* **core:** Auto-fix clippy warnings ([#497](https://github.com/lumina-ai-inc/chunkr/issues/497)) ([8469ddf](https://github.com/lumina-ai-inc/chunkr/commit/8469ddf179709c40949965be203259231bf6b950))
+
+## [1.15.1](https://github.com/lumina-ai-inc/chunkr/compare/v1.15.0...v1.15.1) (2025-05-06)
+
+
+### Bug Fixes
+
+* Formula prompt selection bug ([#484](https://github.com/lumina-ai-inc/chunkr/issues/484)) ([3b0942b](https://github.com/lumina-ai-inc/chunkr/commit/3b0942b4745739199aa6a8ef11567f05acf4d4cc))
+
+## [1.15.0](https://github.com/lumina-ai-inc/chunkr/compare/v1.14.2...v1.15.0) (2025-05-06)
+
+
+### Features
+
+* Added extended context (full page + segment) in `segment_processing` ([#480](https://github.com/lumina-ai-inc/chunkr/issues/480)) ([542377b](https://github.com/lumina-ai-inc/chunkr/commit/542377b904aef5fb215bdea3f837315a23eb37de))
+
+
+### Bug Fixes
+
+* Add Default trait implementation to FallbackStrategy enum ([#479](https://github.com/lumina-ai-inc/chunkr/issues/479)) ([d9a2eaf](https://github.com/lumina-ai-inc/chunkr/commit/d9a2eaf86470d82e8dfed9af874d3cc49ca76ba5))
+
+## [1.14.2](https://github.com/lumina-ai-inc/chunkr/compare/v1.14.1...v1.14.2) (2025-05-01)
+
+
+### Bug Fixes
+
+* List style points visible now ([#476](https://github.com/lumina-ai-inc/chunkr/issues/476)) ([95a9844](https://github.com/lumina-ai-inc/chunkr/commit/95a98449bf6b6c8f0befd728ceb8206656966b8d))
+
+## [1.14.1](https://github.com/lumina-ai-inc/chunkr/compare/v1.14.0...v1.14.1) (2025-04-30)
+
+
+### Bug Fixes
+
+* Solved latex rendering errors and final viewer optimizations in place ([#472](https://github.com/lumina-ai-inc/chunkr/issues/472)) ([1fd05c4](https://github.com/lumina-ai-inc/chunkr/commit/1fd05c4ca3b499ddeb7549dbf03988a4e30ea1a8))
+
+## [1.14.0](https://github.com/lumina-ai-inc/chunkr/compare/v1.13.0...v1.14.0) (2025-04-29)
+
+
+### Features
+
+* Added task retries, started at time, border boxes and more UI enhancements for special segment types like tables, formulas and image descriptions, modified self-host tier based usage section and always showing overage ticker ([#460](https://github.com/lumina-ai-inc/chunkr/issues/460)) ([40a4a69](https://github.com/lumina-ai-inc/chunkr/commit/40a4a6987f82fa01a5cadcbedeee4264bcdb7916))
+
+
+### Bug Fixes
+
+* Compose-cpu web server replicas ([#467](https://github.com/lumina-ai-inc/chunkr/issues/467)) ([41b2433](https://github.com/lumina-ai-inc/chunkr/commit/41b2433e6ce747c21a0e157e3759b7f1a27ec5ad))
+* Updated problematic ML dependencies ([#468](https://github.com/lumina-ai-inc/chunkr/issues/468)) ([5e60961](https://github.com/lumina-ai-inc/chunkr/commit/5e6096122d333b832c8fff1437cb47f70979683e))
+* Viewer optimizations and momentum scroll fix ([#466](https://github.com/lumina-ai-inc/chunkr/issues/466)) ([671f840](https://github.com/lumina-ai-inc/chunkr/commit/671f84083eb796b9a120e3ad3f57c7a61cbfcde3))
+
+## [1.13.0](https://github.com/lumina-ai-inc/chunkr/compare/v1.12.1...v1.13.0) (2025-04-26)
+
+
+### Features
+
+* Fixed reading of text layer (prevent whitespace in between words) ([#461](https://github.com/lumina-ai-inc/chunkr/issues/461)) ([8eba7d3](https://github.com/lumina-ai-inc/chunkr/commit/8eba7d36d108c736f0d0ca658cf90716c2c0c544))
+
+## [1.12.1](https://github.com/lumina-ai-inc/chunkr/compare/v1.12.0...v1.12.1) (2025-04-23)
+
+
+### Bug Fixes
+
+* Llm models are now fetched from `VITE_API_URL` ([#457](https://github.com/lumina-ai-inc/chunkr/issues/457)) ([06ce1ea](https://github.com/lumina-ai-inc/chunkr/commit/06ce1eaa98048753fd065ddb00908b54914f4857))
+
+## [1.12.0](https://github.com/lumina-ai-inc/chunkr/compare/v1.11.2...v1.12.0) (2025-04-23)
+
+
+### Features
+
+* Update web to use `/task/parse` API route and added `error_handling`, `llm_processing`, `embed_sources` and tokenization settings in the upload component ([#450](https://github.com/lumina-ai-inc/chunkr/issues/450)) ([b1a6aef](https://github.com/lumina-ai-inc/chunkr/commit/b1a6aef41ff8d73daa9ba435e37219b98c765524))
+
+## [1.11.2](https://github.com/lumina-ai-inc/chunkr/compare/v1.11.1...v1.11.2) (2025-04-22)
+
+
+### Bug Fixes
+
+* Improved handling of base64, bytes-like and file-like file content in the python client ([#452](https://github.com/lumina-ai-inc/chunkr/issues/452)) ([65e479f](https://github.com/lumina-ai-inc/chunkr/commit/65e479f75ecb91e676afcffe1843d4902a8736e7))
+
+## [1.11.1](https://github.com/lumina-ai-inc/chunkr/compare/v1.11.0...v1.11.1) (2025-04-18)
+
+
+### Bug Fixes
+
+* Config map in helm chart ([5a08085](https://github.com/lumina-ai-inc/chunkr/commit/5a08085e3c72647dd0833cdcc5574e99948298d5))
+* Paths decodable as base64 string can be used with the python client ([#444](https://github.com/lumina-ai-inc/chunkr/issues/444)) ([d544aac](https://github.com/lumina-ai-inc/chunkr/commit/d544aac952d7a6b45ece09b691ad0d1d4b9454c1))
+
+## [1.11.0](https://github.com/lumina-ai-inc/chunkr/compare/v1.10.0...v1.11.0) (2025-04-15)
+
+
+### Features
+
+* Allow users to choose an LLM model to use for `segment_processing` by setting the `llm_processing.model_id` param in the POST and PATCH request. The available models can be configured using the `models.yaml` file. ([#437](https://github.com/lumina-ai-inc/chunkr/issues/437)) ([ea526c4](https://github.com/lumina-ai-inc/chunkr/commit/ea526c4c48692ae5d8a9ba00b70008ce238a4c14))
+* Https support for docker compose using nginx ([#434](https://github.com/lumina-ai-inc/chunkr/issues/434)) ([868096c](https://github.com/lumina-ai-inc/chunkr/commit/868096c8adbb051243e433b2b1c7f440ac1b5997))
+
+## [1.10.0](https://github.com/lumina-ai-inc/chunkr/compare/v1.9.0...v1.10.0) (2025-04-06)
+
+
+### Features
+
+* Added configuration for `error_handling` which allows you to choose between `Fail` or `Continue` on non-critical errors ([0baca0a](https://github.com/lumina-ai-inc/chunkr/commit/0baca0a519b44d139f64d02bec754f259ed329de))
+
+
+### Bug Fixes
+
+* Default trait added to chunk processing ([20c6f15](https://github.com/lumina-ai-inc/chunkr/commit/20c6f15bf5ef1a538413147103313e65e1223e47))
+
 ## [1.9.0](https://github.com/lumina-ai-inc/chunkr/compare/v1.8.2...v1.9.0) (2025-03-28)
 
 

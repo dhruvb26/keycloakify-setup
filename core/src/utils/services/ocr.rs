@@ -33,7 +33,7 @@ pub async fn perform_general_ocr(
 }
 
 pub async fn doctr_ocr(
-    temp_files: &Vec<&NamedTempFile>,
+    temp_files: &[&NamedTempFile],
 ) -> Result<Vec<Vec<OCRResult>>, Box<dyn Error + Send + Sync>> {
     let client = reqwest::Client::new();
     let worker_config = WorkerConfig::from_env()
@@ -62,10 +62,8 @@ pub async fn doctr_ocr(
 
     let mut request = client.post(&url).multipart(form);
 
-    if let Some(timeout) = GENERAL_OCR_TIMEOUT.get() {
-        if let Some(timeout_value) = timeout {
-            request = request.timeout(std::time::Duration::from_secs(*timeout_value));
-        }
+    if let Some(Some(timeout_value)) = GENERAL_OCR_TIMEOUT.get() {
+        request = request.timeout(std::time::Duration::from_secs(*timeout_value));
     }
 
     let response = request.send().await?.error_for_status()?;
@@ -83,7 +81,7 @@ mod tests {
     async fn test_doctr_ocr() -> Result<(), Box<dyn Error + Send + Sync>> {
         let temp_file = NamedTempFile::new()?;
         std::fs::copy("input/test.jpg", temp_file.path())?;
-        doctr_ocr(&vec![&temp_file]).await?;
+        doctr_ocr(&[&temp_file]).await?;
         Ok(())
     }
 

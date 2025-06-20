@@ -34,13 +34,13 @@ pub fn hierarchical_chunking(
 
     // Makes the chunking faster by calculating the word count in parallel
     segments.par_iter().for_each(|segment| {
-        if let Err(e) = segment.count_embed_words(&configuration) {
+        if let Err(e) = segment.count_embed_words(configuration) {
             println!("Error: {}", e);
         }
     });
 
     for (i, segment) in segments.iter().enumerate() {
-        let segment_word_count = segment.count_embed_words(&configuration)?;
+        let segment_word_count = segment.count_embed_words(configuration)?;
         let current_hierarchy_level = get_hierarchy_level(&segment.segment_type);
 
         match segment.segment_type {
@@ -71,7 +71,7 @@ pub fn hierarchical_chunking(
                         .get(i + 1)
                         .is_some_and(|s| s.segment_type == SegmentType::Caption);
                     let caption_word_count = if let Some(s) = segments.get(i + 1) {
-                        s.count_embed_words(&configuration)?
+                        s.count_embed_words(configuration)?
                     } else {
                         0
                     };
@@ -92,7 +92,7 @@ pub fn hierarchical_chunking(
                             || s.segment_type == SegmentType::Table
                     });
                     let asset_word_count = if let Some(s) = segments.get(i + 1) {
-                        s.count_embed_words(&configuration)?
+                        s.count_embed_words(configuration)?
                     } else {
                         0
                     };
@@ -133,9 +133,10 @@ pub fn hierarchical_chunking(
 mod tests {
     use super::*;
     use crate::models::chunk_processing::{ChunkProcessing, Tokenizer, TokenizerType};
+    use crate::models::llm::LlmProcessing;
     use crate::models::output::{BoundingBox, Segment, SegmentType};
     use crate::models::segment_processing::{EmbedSource, SegmentProcessing};
-    use crate::models::upload::{OcrStrategy, SegmentationStrategy};
+    use crate::models::upload::{ErrorHandlingStrategy, OcrStrategy, SegmentationStrategy};
 
     fn create_segment(content: &str, segment_type: SegmentType) -> Segment {
         Segment {
@@ -171,6 +172,8 @@ mod tests {
             segment_processing: SegmentProcessing::default(),
             segmentation_strategy: SegmentationStrategy::LayoutAnalysis,
             target_chunk_length: None,
+            error_handling: ErrorHandlingStrategy::default(),
+            llm_processing: LlmProcessing::default(),
         };
 
         config

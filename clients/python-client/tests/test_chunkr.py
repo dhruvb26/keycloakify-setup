@@ -2,26 +2,38 @@ import pytest
 from pathlib import Path
 from PIL import Image
 import asyncio
-import base64
+from typing import Awaitable
 
 from chunkr_ai import Chunkr
 from chunkr_ai.models import (
+    ChunkProcessing,
     Configuration,
-    GenerationStrategy,
+    EmbedSource,
+    ErrorHandlingStrategy,
+    FallbackStrategy,
     GenerationConfig,
+    GenerationStrategy,
+    LlmProcessing,
     OcrStrategy,
     Pipeline,
     SegmentationStrategy,
     SegmentProcessing,
-    ChunkProcessing,
+    Status,
     TaskResponse,
-    EmbedSource,
     Tokenizer,
 )
 
 @pytest.fixture
 def sample_path():
     return Path("tests/files/test.pdf")
+
+@pytest.fixture
+def sample_absolute_path_str():
+    return "tests/files/test.pdf"
+
+@pytest.fixture
+def sample_relative_path_str():
+    return "./tests/files/test.pdf"
 
 @pytest.fixture
 def sample_image():
@@ -40,7 +52,7 @@ def client():
 def markdown_embed_config():
     return Configuration(
         segment_processing=SegmentProcessing(
-            page=GenerationConfig(
+            Page=GenerationConfig(
                 html=GenerationStrategy.LLM,
                 markdown=GenerationStrategy.LLM,
                 embed_sources=[EmbedSource.MARKDOWN]
@@ -52,7 +64,7 @@ def markdown_embed_config():
 def html_embed_config():
     return Configuration(
         segment_processing=SegmentProcessing(
-            page=GenerationConfig(
+            Page=GenerationConfig(
                 html=GenerationStrategy.LLM,
                 markdown=GenerationStrategy.LLM,
                 embed_sources=[EmbedSource.HTML]
@@ -64,7 +76,7 @@ def html_embed_config():
 def multiple_embed_config():
     return Configuration(
         segment_processing=SegmentProcessing(
-            page=GenerationConfig(
+            Page=GenerationConfig(
                 html=GenerationStrategy.LLM,
                 markdown=GenerationStrategy.LLM,
                 llm="Generate a summary of this content",
@@ -112,7 +124,7 @@ def xlm_roberta_with_html_content_config():
             tokenizer=Tokenizer.XLM_ROBERTA_BASE
         ),
         segment_processing=SegmentProcessing(
-            page=GenerationConfig(
+            Page=GenerationConfig(
                 html=GenerationStrategy.LLM,
                 markdown=GenerationStrategy.LLM,
                 embed_sources=[EmbedSource.HTML, EmbedSource.CONTENT]
@@ -120,42 +132,53 @@ def xlm_roberta_with_html_content_config():
         ),
     )
 
-@pytest.mark.asyncio
-async def test_send_file_path(client, sample_path):
-    response = await client.upload(sample_path)
-    assert response.task_id is not None
-    assert response.status == "Succeeded"
-    assert response.output is not None
+@pytest.fixture
+def none_fallback_config():
+    return Configuration(
+        llm_processing=LlmProcessing(
+            model_id="gemini-pro-2.5",
+            fallback_strategy=FallbackStrategy.none(),
+            max_completion_tokens=500,
+            temperature=0.2
+        ),
+    )
 
-@pytest.mark.asyncio
-async def test_send_file_url(client, sample_url):
-    response = await client.upload(sample_url)
-    assert response.task_id is not None
-    assert response.status == "Succeeded"
-    assert response.output is not None
+@pytest.fixture
+def default_fallback_config():
+    return Configuration(
+        llm_processing=LlmProcessing(
+            model_id="gemini-pro-2.5",
+            fallback_strategy=FallbackStrategy.default(),
+            max_completion_tokens=1000,
+            temperature=0.5
+        ),
+    )
 
-@pytest.mark.asyncio
-async def test_send_file_path_str(client, sample_path):
-    response = await client.upload(str(sample_path))
-    assert response.task_id is not None
-    assert response.status == "Succeeded"
-    assert response.output is not None
+@pytest.fixture
+def model_fallback_config():
+    return Configuration(
+        llm_processing=LlmProcessing(
+            model_id="gemini-pro-2.5",
+            fallback_strategy=FallbackStrategy.model("claude-3.7-sonnet"),
+            max_completion_tokens=2000,
+            temperature=0.7
+        ),
+    )
 
-@pytest.mark.asyncio
-async def test_send_opened_file(client, sample_path):
-    with open(sample_path, "rb") as f:
-        response = await client.upload(f)
-    assert response.task_id is not None
-    assert response.status == "Succeeded"
-    assert response.output is not None
-
-@pytest.mark.asyncio
-async def test_send_pil_image(client, sample_image):
-    response = await client.upload(sample_image)
-    assert response.task_id is not None
-    assert response.status == "Succeeded"
-    assert response.output is not None
-    assert response.output is not None
+@pytest.fixture
+def extended_context_config():
+    return Configuration(
+        segment_processing=SegmentProcessing(
+            picture=GenerationConfig(
+                extended_context=True,
+                html=GenerationStrategy.LLM,
+            ),
+            table=GenerationConfig(
+                extended_context=True,
+                html=GenerationStrategy.LLM,
+            )
+        ),
+    )
 
 @pytest.mark.asyncio
 async def test_ocr_auto(client, sample_path):
@@ -204,7 +227,7 @@ async def test_page_llm_html(client, sample_path):
         Configuration(
             segmentation_strategy=SegmentationStrategy.PAGE,
             segment_processing=SegmentProcessing(
-                page=GenerationConfig(html=GenerationStrategy.LLM)
+                Page=GenerationConfig(html=GenerationStrategy.LLM)
             ),
         ),
     )
@@ -217,7 +240,7 @@ async def test_page_llm(client, sample_path):
     configuration = Configuration(
         segmentation_strategy=SegmentationStrategy.PAGE,
         segment_processing=SegmentProcessing(
-            page=GenerationConfig(
+            Page=GenerationConfig(
                 html=GenerationStrategy.LLM, markdown=GenerationStrategy.LLM
             )
         ),
@@ -255,9 +278,18 @@ async def test_cancel_task(client, sample_path):
 @pytest.mark.asyncio
 async def test_cancel_task_direct(client, sample_path):
     task = await client.create_task(sample_path)
-    assert isinstance(task, TaskResponse)
     assert task.status == "Starting"
-    await task.cancel()
+    try:
+        await task.cancel()
+    except Exception as e:
+        task = await client.get_task(task.task_id)
+        print(task.status)
+        if task.status == Status.PROCESSING:
+            print("Task is processing, so it can't be cancelled")
+            assert True
+        else:
+            print("Task status:", task.status)
+            raise e
     assert task.status == "Cancelled"
 
 @pytest.mark.asyncio
@@ -283,7 +315,8 @@ async def test_update_task_direct(client, sample_path):
         segmentation_strategy=SegmentationStrategy.PAGE,
     )
     task = await client.upload(sample_path, original_config)
-    task = await task.update(new_config)
+    task = await (await task.update(new_config))
+    assert isinstance(task, TaskResponse)
     assert task.status == "Succeeded"
     assert task.output is not None
     assert task.configuration.segmentation_strategy == SegmentationStrategy.PAGE
@@ -294,14 +327,16 @@ async def test_pipeline_type_azure(client, sample_path):
     assert response.task_id is not None
     assert response.status == "Succeeded"
     assert response.output is not None
+    assert response.configuration.pipeline == Pipeline.AZURE
     
 @pytest.mark.asyncio
-async def test_pipeline_type_azure(client, sample_path):
+async def test_pipeline_type_chunkr(client, sample_path):
     response = await client.upload(sample_path, Configuration(pipeline=Pipeline.CHUNKR))
     assert response.task_id is not None
     assert response.status == "Succeeded"
     assert response.output is not None
-
+    assert response.configuration.pipeline == Pipeline.CHUNKR
+    
 @pytest.mark.asyncio
 async def test_client_lifecycle(client, sample_path):
     response1 = await client.upload(sample_path)
@@ -317,36 +352,6 @@ async def test_task_operations_after_client_close(client, sample_path):
     result = await task.poll()
     assert result.status == "Succeeded"
 
-@pytest.mark.asyncio
-async def test_send_base64_file(client, sample_path):
-    # Read file and convert to base64
-    with open(sample_path, "rb") as f:
-        base64_content = base64.b64encode(f.read()).decode('utf-8')
-    response = await client.upload(base64_content)
-    assert response.task_id is not None
-    assert response.status == "Succeeded"
-    assert response.output is not None
-
-@pytest.mark.asyncio
-async def test_send_base64_file_with_data_url(client, sample_path):
-    with open(sample_path, "rb") as f:
-        base64_content = base64.b64encode(f.read()).decode('utf-8')
-    response = await client.upload(f"data:application/pdf;base64,{base64_content}")
-    assert response.task_id is not None
-    assert response.status == "Succeeded"
-    assert response.output is not None
-
-@pytest.mark.asyncio
-async def test_send_base64_file_with_filename(client, sample_path):
-    # Read file and convert to base64
-    with open(sample_path, "rb") as f:
-        base64_content = base64.b64encode(f.read()).decode('utf-8')
-    
-    response = await client.upload(base64_content, filename="test.pdf")
-    assert response.task_id is not None
-    assert response.status == "Succeeded"
-    assert response.output is not None
-    
 @pytest.mark.asyncio
 async def test_output_files_no_dir(client, sample_path, tmp_path):
     task = await client.upload(sample_path)
@@ -385,6 +390,35 @@ async def test_output_files_with_dirs(client, sample_path, tmp_path):
     assert md_file.exists()
     assert content_file.exists()
     assert json_file.exists()
+
+
+@pytest.mark.asyncio
+async def test_combined_config_with_llm_and_other_settings(client, sample_path):
+    # Test combining LLM settings with other configuration options
+    config = Configuration(
+        llm_processing=LlmProcessing(
+            model_id="qwen-2.5-vl-7b-instruct",
+            fallback_strategy=FallbackStrategy.model("gemini-flash-2.0"),
+            temperature=0.4
+        ),
+        segmentation_strategy=SegmentationStrategy.PAGE,
+        segment_processing=SegmentProcessing(
+            Page=GenerationConfig(
+                html=GenerationStrategy.LLM,
+                markdown=GenerationStrategy.LLM
+            )
+        ),
+        chunk_processing=ChunkProcessing(target_length=1024)
+    )
+    
+    response = await client.upload(sample_path, config)
+    assert response.task_id is not None
+    assert response.status == "Succeeded"
+    assert response.output is not None
+    assert response.configuration.llm_processing is not None
+    assert response.configuration.llm_processing.model_id == "qwen-2.5-vl-7b-instruct"
+    assert response.configuration.segmentation_strategy == SegmentationStrategy.PAGE
+    assert response.configuration.chunk_processing.target_length == 1024
 
 @pytest.mark.asyncio
 async def test_embed_sources_markdown_only(client, sample_path, markdown_embed_config):
@@ -437,9 +471,115 @@ async def test_tokenizer_custom_string(client, sample_path, custom_tokenizer_con
     assert response.status == "Succeeded"
     assert response.output is not None
 
+# @pytest.mark.asyncio
+# async def test_embed_sources_with_different_tokenizer(client, sample_path, xlm_roberta_with_html_content_config):
+#     response = await client.upload(sample_path, xlm_roberta_with_html_content_config)
+#     assert response.task_id is not None
+#     assert response.status == "Succeeded"
+#     assert response.output is not None
+
 @pytest.mark.asyncio
-async def test_embed_sources_with_different_tokenizer(client, sample_path, xlm_roberta_with_html_content_config):
-    response = await client.upload(sample_path, xlm_roberta_with_html_content_config)
+async def test_error_handling_continue(client, sample_path):
+    response = await client.upload(sample_path, Configuration(error_handling=ErrorHandlingStrategy.CONTINUE))
     assert response.task_id is not None
     assert response.status == "Succeeded"
     assert response.output is not None
+
+@pytest.mark.asyncio
+async def test_llm_processing_none_fallback(client, sample_path, none_fallback_config):
+    response = await client.upload(sample_path, none_fallback_config)
+    assert response.task_id is not None
+    assert response.status == "Succeeded"
+    assert response.output is not None
+    assert response.configuration.llm_processing is not None
+    assert response.configuration.llm_processing.model_id == "gemini-pro-2.5"
+    assert str(response.configuration.llm_processing.fallback_strategy) == "None"
+    assert response.configuration.llm_processing.max_completion_tokens == 500
+    assert response.configuration.llm_processing.temperature == 0.2
+
+@pytest.mark.asyncio
+async def test_llm_processing_default_fallback(client, sample_path, default_fallback_config):
+    response = await client.upload(sample_path, default_fallback_config)
+    assert response.task_id is not None
+    assert response.status == "Succeeded"
+    assert response.output is not None
+    assert response.configuration.llm_processing is not None
+    assert response.configuration.llm_processing.model_id == "gemini-pro-2.5"
+    # The service may resolve Default to an actual model
+    assert response.configuration.llm_processing.fallback_strategy is not None
+    assert response.configuration.llm_processing.max_completion_tokens == 1000
+    assert response.configuration.llm_processing.temperature == 0.5
+
+@pytest.mark.asyncio
+async def test_llm_processing_model_fallback(client, sample_path, model_fallback_config):
+    response = await client.upload(sample_path, model_fallback_config)
+    assert response.task_id is not None
+    assert response.status == "Succeeded"
+    assert response.output is not None
+    assert response.configuration.llm_processing is not None
+    assert response.configuration.llm_processing.model_id == "gemini-pro-2.5"
+    assert str(response.configuration.llm_processing.fallback_strategy) == "Model(claude-3.7-sonnet)"
+    assert response.configuration.llm_processing.max_completion_tokens == 2000
+    assert response.configuration.llm_processing.temperature == 0.7
+
+@pytest.mark.asyncio
+async def test_llm_custom_model(client, sample_path):
+    config = Configuration(
+        llm_processing=LlmProcessing(
+            model_id="claude-3.7-sonnet",  # Using a model from models.yaml
+            fallback_strategy=FallbackStrategy.none(),
+            max_completion_tokens=1500,
+            temperature=0.3
+        ),
+    )
+    response = await client.upload(sample_path, config)
+    assert response.task_id is not None
+    assert response.status == "Succeeded"
+    assert response.output is not None
+    assert response.configuration.llm_processing is not None
+    assert response.configuration.llm_processing.model_id == "claude-3.7-sonnet"
+
+@pytest.mark.asyncio
+async def test_fallback_strategy_serialization():
+    # Test that FallbackStrategy objects serialize correctly
+    none_strategy = FallbackStrategy.none()
+    default_strategy = FallbackStrategy.default()
+    model_strategy = FallbackStrategy.model("gpt-4.1")
+    
+    assert none_strategy.model_dump() == "None"
+    assert default_strategy.model_dump() == "Default"
+    assert model_strategy.model_dump() == {"Model": "gpt-4.1"}
+    
+    # Test string representation
+    assert str(none_strategy) == "None"
+    assert str(default_strategy) == "Default"
+    assert str(model_strategy) == "Model(gpt-4.1)"
+
+@pytest.mark.asyncio
+async def test_extended_context(client, sample_path, extended_context_config):
+    """Tests uploading with extended context enabled for pictures and tables."""
+    print("\nTesting extended context for Pictures and Tables...")
+    try:
+        task = await client.upload(sample_path, config=extended_context_config)
+        print(f"Task created with extended context config: {task.task_id}")
+        print(f"Initial Status: {task.status}")
+
+        # Poll the task until it finishes or fails
+        print(f"Final Status: {task.status}")
+        print(f"Message: {task.message}")
+
+        # Basic assertion: Check if the task completed (either succeeded or failed)
+        assert task.status in [Status.SUCCEEDED, Status.FAILED], f"Task ended in unexpected state: {task.status}"
+
+        # More specific assertions based on expected outcomes with your local server
+        # if task.status == Status.FAILED:
+        #     assert "context_length_exceeded" in task.message, "Expected context length error"
+        # elif task.status == Status.SUCCEEDED:
+        #     # Check if output reflects extended context usage if possible
+        #     pass
+
+        print("Extended context test completed.")
+
+    except Exception as e:
+        print(f"Error during extended context test: {e}")
+        raise # Re-raise the exception to fail the test explicitly

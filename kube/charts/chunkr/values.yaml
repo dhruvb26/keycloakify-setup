@@ -38,6 +38,8 @@ common:
         .Values.ingress.domain }}
     - name: AWS__REGION
       value: us-east-1
+    - name: LLM__MODELS_PATH
+      value: /app/models.yaml
     - name: PG__URL
       value: >-
         postgresql://{{ .Values.services.postgres.credentials.username }}:{{
@@ -63,7 +65,7 @@ global:
   topologySpreadConstraints:
     - maxSkew: 1
       topologyKey: kubernetes.io/hostname
-      whenUnsatisfiable: DoNotSchedule
+      whenUnsatisfiable: ScheduleAnyway
       labelSelector:
         matchExpressions:
           - key: app.kubernetes.io/name
@@ -109,7 +111,7 @@ services:
     useStandardEnv: true
     image:
       repository: server
-      tag: 1.9.0
+      tag: 1.20.1
     port: 8000
     targetPort: 8000
     ingress:
@@ -118,23 +120,41 @@ services:
     envFrom:
       - secretRef:
           name: chunkr-secret
+    volumes:
+      - name: llm-models-config
+        configMap:
+          name: llm-models-configmap
+    volumeMounts:
+      - name: llm-models-config
+        mountPath: /app/models.yaml
+        subPath: models.yaml
+        readOnly: true
   task:
     enabled: true
     useStandardEnv: true
     image:
       repository: task
-      tag: 1.9.0
+      tag: 1.20.1
     envFrom:
       - secretRef:
           name: chunkr-secret
     env:
       - name: PG__POOL__MAX_SIZE
         value: '3'
+    volumes:
+      - name: llm-models-config
+        configMap:
+          name: llm-models-configmap
+    volumeMounts:
+      - name: llm-models-config
+        mountPath: /app/models.yaml
+        subPath: models.yaml
+        readOnly: true
   web:
     enabled: true
     image:
       repository: web
-      tag: 1.9.0
+      tag: 1.20.1
     port: 8000
     targetPort: 8000
     ingress:
@@ -167,7 +187,7 @@ services:
     enabled: true
     image:
       repository: doctr
-      tag: 1.9.0
+      tag: 1.20.1
     port: 8000
     targetPort: 8000
     useGPU: true

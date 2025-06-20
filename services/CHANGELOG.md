@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.1.3](https://github.com/lumina-ai-inc/chunkr/compare/chunkr-services-v0.1.2...chunkr-services-v0.1.3) (2025-05-22)
+
+
+### Bug Fixes
+
+* **core:** Auto-fix clippy warnings ([#518](https://github.com/lumina-ai-inc/chunkr/issues/518)) ([238f47f](https://github.com/lumina-ai-inc/chunkr/commit/238f47fdaf5d2e62d12448424d1018eb1803b8f8))
+
+## [0.1.2](https://github.com/lumina-ai-inc/chunkr/compare/chunkr-services-v0.1.1...chunkr-services-v0.1.2) (2025-04-29)
+
+
+### Bug Fixes
+
+* Updated problematic ML dependencies ([#468](https://github.com/lumina-ai-inc/chunkr/issues/468)) ([5e60961](https://github.com/lumina-ai-inc/chunkr/commit/5e6096122d333b832c8fff1437cb47f70979683e))
+
 ## [0.1.1](https://github.com/lumina-ai-inc/chunkr/compare/chunkr-services-v0.1.0...chunkr-services-v0.1.1) (2025-03-27)
 
 

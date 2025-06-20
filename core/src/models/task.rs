@@ -1,10 +1,11 @@
-use crate::configs::worker_config;
+use crate::configs::{otel_config, worker_config};
 use crate::models::chunk_processing::ChunkProcessing;
+use crate::models::llm::LlmProcessing;
 use crate::models::output::{Chunk, OutputResponse, Segment, SegmentType};
 use crate::models::segment_processing::{
     GenerationStrategy, PictureGenerationConfig, SegmentProcessing,
 };
-use crate::models::upload::{OcrStrategy, SegmentationStrategy};
+use crate::models::upload::{ErrorHandlingStrategy, OcrStrategy, SegmentationStrategy};
 use crate::utils::clients::get_pg_client;
 use crate::utils::services::file_operations::check_file_type;
 use crate::utils::storage::services::delete_folder;
@@ -23,12 +24,12 @@ use tempfile::NamedTempFile;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
+use super::auth::UserInfo;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskDetails {
     pub task_id: String,
-    pub user_id: String,
-    pub email: Option<String>,
-    pub name: String,
+    pub user_info: UserInfo,
     pub page_count: i32,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub completed_at: Option<chrono::DateTime<chrono::Utc>>,
@@ -83,7 +84,7 @@ impl Task {
         let name = file_name.clone().unwrap_or_default();
         let original_extension = name
             .split('.')
-            .last()
+            .next_back()
             .filter(|s| !s.is_empty())
             .map(|s| s.to_string());
         let (mime_type, extension) = check_file_type(file, original_extension)?;
@@ -357,7 +358,7 @@ impl Task {
                 {
                     self.message = Some(msg.clone());
                     return Err(Box::new(TimeoutError {
-                        message: format!("Task has timed out and cannot be updated"),
+                        message: "Task has timed out and cannot be updated".to_string(),
                     }));
                 }
             }
@@ -515,7 +516,7 @@ impl Task {
         });
 
         let mut output_temp_file = NamedTempFile::new()?;
-        output_temp_file.write(serde_json::to_string(&output_response)?.as_bytes())?;
+        output_temp_file.write_all(serde_json::to_string(&output_response)?.as_bytes())?;
         upload_to_s3(&self.output_location, output_temp_file.path()).await?;
         upload_to_s3(&self.pdf_location, pdf_file.path()).await?;
 
@@ -654,6 +655,7 @@ impl Task {
         previous_status: Option<Status>,
         previous_message: Option<String>,
         previous_version: Option<String>,
+        user_info: &UserInfo,
     ) -> TaskPayload {
         TaskPayload {
             previous_configuration,
@@ -661,7 +663,8 @@ impl Task {
             previous_message,
             previous_version,
             task_id: self.task_id.clone(),
-            user_id: self.user_id.clone(),
+            user_info: user_info.clone(),
+            trace_context: otel_config::Config::extract_context_for_propagation(),
         }
     }
 }
@@ -730,12 +733,11 @@ pub enum PipelineType {
 }
 
 #[derive(Debug, Serialize, Clone, ToSql, FromSql, ToSchema)]
-/// The configuration used for the task.
 pub struct Configuration {
     pub chunk_processing: ChunkProcessing,
     #[serde(alias = "expires_at")]
     /// The number of seconds until task is deleted.
-    /// Expried tasks can **not** be updated, polled or accessed via web interface.
+    /// Expired tasks can **not** be updated, polled or accessed via web interface.
     pub expires_in: Option<i32>,
     /// Whether to use high-resolution images for cropping and post-processing.
     pub high_resolution: bool,
@@ -757,6 +759,8 @@ pub struct Configuration {
     #[cfg(feature = "azure")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pipeline: Option<PipelineType>,
+    pub error_handling: ErrorHandlingStrategy,
+    pub llm_processing: LlmProcessing,
 }
 
 impl<'de> Deserialize<'de> for Configuration {
@@ -784,6 +788,10 @@ impl<'de> Deserialize<'de> for Configuration {
             target_chunk_length: Option<u32>,
             #[cfg(feature = "azure")]
             pipeline: Option<PipelineType>,
+            #[serde(default)]
+            error_handling: Option<ErrorHandlingStrategy>,
+            #[serde(default)]
+            llm_processing: Option<LlmProcessing>,
         }
 
         let helper = Helper::deserialize(deserializer)?;
@@ -816,6 +824,8 @@ impl<'de> Deserialize<'de> for Configuration {
             target_chunk_length: helper.target_chunk_length,
             #[cfg(feature = "azure")]
             pipeline: helper.pipeline,
+            error_handling: helper.error_handling.unwrap_or_default(),
+            llm_processing: helper.llm_processing.unwrap_or_default(),
         })
     }
 }
@@ -827,14 +837,15 @@ pub enum Model {
     HighQuality,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, ToSchema)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct TaskPayload {
     pub previous_configuration: Option<Configuration>,
     pub previous_message: Option<String>,
     pub previous_status: Option<Status>,
     pub previous_version: Option<String>,
     pub task_id: String,
-    pub user_id: String,
+    pub user_info: UserInfo,
+    pub trace_context: Option<String>,
 }
 
 #[derive(Deserialize)]

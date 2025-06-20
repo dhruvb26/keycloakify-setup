@@ -1,5 +1,47 @@
 # Changelog
 
+## [0.0.50](https://github.com/lumina-ai-inc/chunkr/compare/chunkr-ai-v0.0.49...chunkr-ai-v0.0.50) (2025-05-22)
+
+
+### Bug Fixes
+
+* **core:** Auto-fix clippy warnings ([#518](https://github.com/lumina-ai-inc/chunkr/issues/518)) ([238f47f](https://github.com/lumina-ai-inc/chunkr/commit/238f47fdaf5d2e62d12448424d1018eb1803b8f8))
+
+## [0.0.49](https://github.com/lumina-ai-inc/chunkr/compare/chunkr-ai-v0.0.48...chunkr-ai-v0.0.49) (2025-05-06)
+
+
+### Features
+
+* Added extended context (full page + segment) in `segment_processing` ([#480](https://github.com/lumina-ai-inc/chunkr/issues/480)) ([542377b](https://github.com/lumina-ai-inc/chunkr/commit/542377b904aef5fb215bdea3f837315a23eb37de))
+
+## [0.0.48](https://github.com/lumina-ai-inc/chunkr/compare/chunkr-ai-v0.0.47...chunkr-ai-v0.0.48) (2025-04-22)
+
+
+### Bug Fixes
+
+* Improved handling of base64, bytes-like and file-like file content in the python client ([#452](https://github.com/lumina-ai-inc/chunkr/issues/452)) ([65e479f](https://github.com/lumina-ai-inc/chunkr/commit/65e479f75ecb91e676afcffe1843d4902a8736e7))
+
+## [0.0.47](https://github.com/lumina-ai-inc/chunkr/compare/chunkr-ai-v0.0.46...chunkr-ai-v0.0.47) (2025-04-18)
+
+
+### Bug Fixes
+
+* Paths decodable as base64 string can be used with the python client ([#444](https://github.com/lumina-ai-inc/chunkr/issues/444)) ([d544aac](https://github.com/lumina-ai-inc/chunkr/commit/d544aac952d7a6b45ece09b691ad0d1d4b9454c1))
+
+## [0.0.46](https://github.com/lumina-ai-inc/chunkr/compare/chunkr-ai-v0.0.45...chunkr-ai-v0.0.46) (2025-04-15)
+
+
+### Features
+
+* Allow users to choose an LLM model to use for `segment_processing` by setting the `llm_processing.model_id` param in the POST and PATCH request. The available models can be configured using the `models.yaml` file. ([#437](https://github.com/lumina-ai-inc/chunkr/issues/437)) ([ea526c4](https://github.com/lumina-ai-inc/chunkr/commit/ea526c4c48692ae5d8a9ba00b70008ce238a4c14))
+
+## [0.0.45](https://github.com/lumina-ai-inc/chunkr/compare/chunkr-ai-v0.0.44...chunkr-ai-v0.0.45) (2025-04-06)
+
+
+### Features
+
+* Added configuration for `error_handling` which allows you to choose between `Fail` or `Continue` on non-critical errors ([0baca0a](https://github.com/lumina-ai-inc/chunkr/commit/0baca0a519b44d139f64d02bec754f259ed329de))
+
 ## [0.0.44](https://github.com/lumina-ai-inc/chunkr/compare/chunkr-ai-v0.0.43...chunkr-ai-v0.0.44) (2025-03-28)
 
 

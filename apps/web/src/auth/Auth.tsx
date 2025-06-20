@@ -1,5 +1,4 @@
 import { ReactNode, useEffect } from "react";
-import toast from "react-hot-toast";
 import { useAuth } from "react-oidc-context";
 import useUser from "../hooks/useUser";
 import axiosInstance from "../services/axios.config";
@@ -19,44 +18,47 @@ export default function Auth({ children }: AuthProps) {
         "Authorization"
       ] = `Bearer ${auth.user.access_token}`;
     } else {
-      axiosInstance.defaults.headers.common["Authorization"] = null;
+      delete axiosInstance.defaults.headers.common["Authorization"]; // cleaner thannull
     }
   }, [auth.isAuthenticated, auth.user]);
 
-  // Handle auth state and redirects
+  // Handle auth state and errors
   useEffect(() => {
-    if (auth.error) {
-      const ignoredErrors = [
-        "login_required",
-        "IFrame timed out"
-      ];
+    if (auth.error && !auth.isAuthenticated) {
+      const ignoredErrors = ["login_required", "IFrame timed out"];
 
-      if (!ignoredErrors.some(msg => auth.error?.message?.includes(msg))) {
+      if (!ignoredErrors.some((msg) => auth.error?.message?.includes(msg))) {
         console.log("Auth error:", auth.error);
-        toast.error("Unable to sign in. Please try again.");
+        console.log("Unable to sign in. Please try again.");
       }
     }
-  }, [auth.error]);
+  }, [auth.error, auth.isAuthenticated]);
 
+  // Handle user fetch errors
   useEffect(() => {
-    if (error) {
+    if (error && !auth.isAuthenticated) {
       console.log("Error getting user information", error);
-      toast.error("Error getting user information");
     }
-  }, [error]);
+  }, [error, auth.isAuthenticated]);
 
+  // Silent sign-in logic
   useEffect(() => {
-    // Add a flag to track if we've attempted silent sign-in
-    const attemptedSilentSignIn = sessionStorage.getItem('attemptedSilentSignIn');
+    const attemptedSilentSignIn = sessionStorage.getItem(
+      "attemptedSilentSignIn"
+    );
 
-    // Only try silent sign-in if we haven't attempted it yet
-    if (!auth.isAuthenticated && !auth.isLoading && !auth.activeNavigator && !attemptedSilentSignIn) {
-      sessionStorage.setItem('attemptedSilentSignIn', 'true');
+    if (
+      !auth.isAuthenticated &&
+      !auth.isLoading &&
+      !auth.activeNavigator &&
+      !attemptedSilentSignIn
+    ) {
+      sessionStorage.setItem("attemptedSilentSignIn", "true");
       auth.signinSilent().catch((err) => {
         console.log("Silent sign-in failed:", err);
       });
     }
-  }, [auth.isAuthenticated, auth.isLoading, auth.activeNavigator]);
+  }, [auth.isAuthenticated, auth.isLoading, auth.activeNavigator, auth]);
 
   return <>{children}</>;
 }

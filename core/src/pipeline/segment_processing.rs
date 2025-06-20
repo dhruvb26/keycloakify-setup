@@ -1,13 +1,17 @@
-use crate::configs::llm_config::create_messages_from_template;
+use crate::configs::{llm_config::create_messages_from_template, otel_config};
 use crate::models::output::{Segment, SegmentType};
 use crate::models::pipeline::Pipeline;
 use crate::models::segment_processing::{
     AutoGenerationConfig, GenerationStrategy, LlmGenerationConfig, PictureGenerationConfig,
 };
-use crate::models::task::{Configuration, Status};
+use crate::models::task::Configuration;
+use crate::models::upload::ErrorHandlingStrategy;
 use crate::utils::services::file_operations::get_file_url;
 use crate::utils::services::{html, llm, markdown};
 use lazy_static::lazy_static;
+use opentelemetry::baggage::BaggageExt;
+use opentelemetry::trace::{Span, TraceContextExt, Tracer};
+use opentelemetry::Context;
 use regex::Regex;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -15,6 +19,145 @@ use tempfile::NamedTempFile;
 
 lazy_static! {
     static ref NUMBERED_LIST_REGEX: Regex = Regex::new(r"^(\d+)\.\s+(.+)$").unwrap();
+}
+
+/// Parameters for LLM content generation
+#[derive(Clone)]
+struct LlmGenerationParams<'a> {
+    segment_id: &'a str,
+    image_folder_location: &'a str,
+    segment_image: Arc<NamedTempFile>,
+    page_image: Option<Arc<NamedTempFile>>,
+    extended_context: bool,
+    llm_fallback_content: Option<String>,
+    configuration: &'a Configuration,
+}
+
+/// Parameters for HTML/Markdown generation
+struct ContentGenerationParams<'a> {
+    segment: &'a Segment,
+    segment_image: Option<Arc<NamedTempFile>>,
+    page_image: Option<Arc<NamedTempFile>>,
+    generation_strategy: &'a GenerationStrategy,
+    extended_context: bool,
+    fallback_content: Option<String>,
+    image_folder_location: &'a str,
+    configuration: &'a Configuration,
+}
+
+/// Parameters for generation strategy application
+struct StrategyParams<'a, T: ContentGenerator> {
+    segment_id: &'a str,
+    image_folder_location: &'a str,
+    generator: &'a T,
+    auto_content: &'a str,
+    segment_image: Option<Arc<NamedTempFile>>,
+    page_image: Option<Arc<NamedTempFile>>,
+    generation_strategy: &'a GenerationStrategy,
+    extended_context: bool,
+    override_auto: String,
+    llm_fallback_content: Option<String>,
+    configuration: &'a Configuration,
+}
+
+/// Parameters for standalone LLM generation
+struct StandaloneLlmParams<'a> {
+    segment: &'a Segment,
+    segment_image: Option<Arc<NamedTempFile>>,
+    page_image: Option<Arc<NamedTempFile>>,
+    llm_prompt: Option<String>,
+    extended_context: bool,
+    llm_fallback_content: Option<String>,
+    image_folder_location: &'a str,
+    configuration: &'a Configuration,
+}
+
+impl<'a> LlmGenerationParams<'a> {
+    fn from_strategy_params<T: ContentGenerator>(
+        params: &'a StrategyParams<'a, T>,
+        segment_image: Arc<NamedTempFile>,
+    ) -> Self {
+        Self {
+            segment_id: params.segment_id,
+            image_folder_location: params.image_folder_location,
+            segment_image,
+            page_image: params.page_image.clone(),
+            extended_context: params.extended_context,
+            llm_fallback_content: params.llm_fallback_content.clone(),
+            configuration: params.configuration,
+        }
+    }
+}
+
+impl<'a, T: ContentGenerator> StrategyParams<'a, T> {
+    fn from_content_params(
+        params: &'a ContentGenerationParams<'a>,
+        generator: &'a T,
+        override_auto: String,
+    ) -> Self {
+        Self {
+            segment_id: &params.segment.segment_id,
+            image_folder_location: params.image_folder_location,
+            generator,
+            auto_content: &params.segment.content,
+            segment_image: params.segment_image.clone(),
+            page_image: params.page_image.clone(),
+            generation_strategy: params.generation_strategy,
+            extended_context: params.extended_context
+                && params.generation_strategy == &GenerationStrategy::LLM,
+            override_auto,
+            llm_fallback_content: params.fallback_content.clone(),
+            configuration: params.configuration,
+        }
+    }
+}
+
+impl<'a> ContentGenerationParams<'a> {
+    fn new(
+        segment: &'a Segment,
+        segment_image: Option<Arc<NamedTempFile>>,
+        page_image: Option<Arc<NamedTempFile>>,
+        generation_strategy: &'a GenerationStrategy,
+        extended_context: bool,
+        fallback_content: Option<String>,
+        image_folder_location: &'a str,
+        configuration: &'a Configuration,
+    ) -> Self {
+        Self {
+            segment,
+            segment_image,
+            page_image,
+            generation_strategy,
+            extended_context,
+            fallback_content,
+            image_folder_location,
+            configuration,
+        }
+    }
+}
+
+impl<'a> StandaloneLlmParams<'a> {
+    fn new(
+        segment: &'a Segment,
+        segment_image: Option<Arc<NamedTempFile>>,
+        page_image: Option<Arc<NamedTempFile>>,
+        llm_prompt: Option<String>,
+        extended_context: bool,
+        llm_fallback_content: Option<String>,
+        image_folder_location: &'a str,
+        configuration: &'a Configuration,
+    ) -> Self {
+        Self {
+            segment,
+            segment_image,
+            page_image,
+            llm_prompt,
+            extended_context,
+            llm_fallback_content,
+            image_folder_location,
+            configuration,
+        }
+    }
 }
 
 trait ContentGenerator {
@@ -25,11 +168,68 @@ trait ContentGenerator {
             .to_string()
     }
     fn generate_auto(&self, content: &str) -> String;
-    fn template_key(&self) -> &'static str;
-    fn process_llm_result(&self, content: &str) -> String {
-        content.to_string()
-    }
+    fn template_key(&self, extended_context: bool) -> &'static str;
     fn segment_type(&self) -> SegmentType;
+
+    async fn process_llm(
+        &self,
+        params: &LlmGenerationParams<'_>,
+        tracer: &opentelemetry::global::BoxedTracer,
+        parent_context: &Context,
+    ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+        let mut values = HashMap::new();
+
+        // Keep segment image as is - it's already a reasonable size
+        let segment_image_url = get_file_url(
+            &params.segment_image,
+            &format!("{}/{}.jpg", params.image_folder_location, params.segment_id),
+        )
+        .await?;
+        values.insert("image_url".to_string(), segment_image_url);
+
+        if params.extended_context {
+            if let Some(page_img) = &params.page_image {
+                // Use the page image as is
+                let page_image_url = get_file_url(
+                    page_img,
+                    &format!(
+                        "{}/{}_page.jpg",
+                        params.image_folder_location, params.segment_id
+                    ),
+                )
+                .await?;
+                values.insert("page_image_url".to_string(), page_image_url);
+            } else {
+                return Err("Page image not found".into());
+            }
+        }
+
+        let template_key = self.template_key(params.extended_context);
+        let messages = create_messages_from_template(template_key, &values)?;
+
+        let fence_type = match (template_key, self.segment_type()) {
+            (_, SegmentType::Formula) => Some("latex"),
+            (key, _) if key.starts_with("md_") => Some("markdown"),
+            _ => Some("html"),
+        };
+
+        llm::try_extract_from_llm(
+            messages,
+            fence_type,
+            params.llm_fallback_content.clone(),
+            params.configuration.llm_processing.clone(),
+            tracer,
+            parent_context,
+        )
+        .await
+    }
+
+    async fn generate_llm(
+        &self,
+        params: &LlmGenerationParams<'_>,
+        tracer: &opentelemetry::global::BoxedTracer,
+        parent_context: &Context,
+    ) -> Result<String, Box<dyn std::error::Error + Send + Sync>>;
 }
 
 struct HtmlGenerator {
@@ -62,20 +262,86 @@ impl ContentGenerator for HtmlGenerator {
         }
     }
 
-    fn template_key(&self) -> &'static str {
-        match self.segment_type {
-            SegmentType::Caption => "html_caption",
-            SegmentType::Footnote => "html_footnote",
-            SegmentType::Formula => "formula",
-            SegmentType::ListItem => "html_list_item",
+    fn template_key(&self, extended_context: bool) -> &'static str {
+        match self.segment_type.clone() {
+            SegmentType::Table => {
+                if extended_context {
+                    "html_table_extended"
+                } else {
+                    "html_table"
+                }
+            }
+            SegmentType::Picture => {
+                if extended_context {
+                    "html_picture_extended"
+                } else {
+                    "html_picture"
+                }
+            }
+            SegmentType::Formula => {
+                if extended_context {
+                    "formula_extended"
+                } else {
+                    "formula"
+                }
+            }
             SegmentType::Page => "html_page",
-            SegmentType::PageFooter => "html_page_footer",
-            SegmentType::PageHeader => "html_page_header",
-            SegmentType::Picture => "html_picture",
-            SegmentType::SectionHeader => "html_section_header",
-            SegmentType::Table => "html_table",
-            SegmentType::Text => "html_text",
-            SegmentType::Title => "html_title",
+            SegmentType::Caption => {
+                if extended_context {
+                    "html_caption_extended"
+                } else {
+                    "html_caption"
+                }
+            }
+            SegmentType::Footnote => {
+                if extended_context {
+                    "html_footnote_extended"
+                } else {
+                    "html_footnote"
+                }
+            }
+            SegmentType::ListItem => {
+                if extended_context {
+                    "html_list_item_extended"
+                } else {
+                    "html_list_item"
+                }
+            }
+            SegmentType::PageFooter => {
+                if extended_context {
+                    "html_page_footer_extended"
+                } else {
+                    "html_page_footer"
+                }
+            }
+            SegmentType::PageHeader => {
+                if extended_context {
+                    "html_page_header_extended"
+                } else {
+                    "html_page_header"
+                }
+            }
+            SegmentType::SectionHeader => {
+                if extended_context {
+                    "html_section_header_extended"
+                } else {
+                    "html_section_header"
+                }
+            }
+            SegmentType::Text => {
+                if extended_context {
+                    "html_text_extended"
+                } else {
+                    "html_text"
+                }
+            }
+            SegmentType::Title => {
+                if extended_context {
+                    "html_title_extended"
+                } else {
+                    "html_title"
+                }
+            }
         }
     }
 
@@ -83,10 +349,18 @@ impl ContentGenerator for HtmlGenerator {
         self.segment_type.clone()
     }
 
-    fn process_llm_result(&self, content: &str) -> String {
-        match self.segment_type {
-            SegmentType::Formula => format!("<span class=\"formula\">{}</span>", content),
-            _ => content.to_string(),
+    async fn generate_llm(
+        &self,
+        params: &LlmGenerationParams<'_>,
+        tracer: &opentelemetry::global::BoxedTracer,
+        parent_context: &Context,
+    ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+        let content = self.process_llm(params, tracer, parent_context).await?;
+
+        if self.segment_type() == SegmentType::Formula {
+            Ok(format!("<span class=\"formula\">{}</span>", content))
+        } else {
+            Ok(content)
         }
     }
 }
@@ -122,20 +396,87 @@ impl ContentGenerator for MarkdownGenerator {
         }
     }
 
-    fn template_key(&self) -> &'static str {
-        match self.segment_type {
-            SegmentType::Caption => "md_caption",
-            SegmentType::Footnote => "md_footnote",
-            SegmentType::Formula => "formula",
-            SegmentType::ListItem => "md_list_item",
+    fn template_key(&self, extended_context: bool) -> &'static str {
+        match self.segment_type.clone() {
+            SegmentType::Table => {
+                if extended_context {
+                    "md_table_extended"
+                } else {
+                    "md_table"
+                }
+            }
+            SegmentType::Picture => {
+                if extended_context {
+                    "md_picture_extended"
+                } else {
+                    "md_picture"
+                }
+            }
+            SegmentType::Formula => {
+                if extended_context {
+                    "formula_extended"
+                } else {
+                    "formula"
+                }
+            }
             SegmentType::Page => "md_page",
-            SegmentType::PageFooter => "md_page_footer",
-            SegmentType::PageHeader => "md_page_header",
-            SegmentType::Picture => "md_picture",
-            SegmentType::SectionHeader => "md_section_header",
-            SegmentType::Table => "md_table",
-            SegmentType::Text => "md_text",
-            SegmentType::Title => "md_title",
+
+            SegmentType::Caption => {
+                if extended_context {
+                    "md_caption_extended"
+                } else {
+                    "md_caption"
+                }
+            }
+            SegmentType::Footnote => {
+                if extended_context {
+                    "md_footnote_extended"
+                } else {
+                    "md_footnote"
+                }
+            }
+            SegmentType::ListItem => {
+                if extended_context {
+                    "md_list_item_extended"
+                } else {
+                    "md_list_item"
+                }
+            }
+            SegmentType::PageFooter => {
+                if extended_context {
+                    "md_page_footer_extended"
+                } else {
+                    "md_page_footer"
+                }
+            }
+            SegmentType::PageHeader => {
+                if extended_context {
+                    "md_page_header_extended"
+                } else {
+                    "md_page_header"
+                }
+            }
+            SegmentType::SectionHeader => {
+                if extended_context {
+                    "md_section_header_extended"
+                } else {
+                    "md_section_header"
+                }
+            }
+            SegmentType::Text => {
+                if extended_context {
+                    "md_text_extended"
+                } else {
+                    "md_text"
+                }
+            }
+            SegmentType::Title => {
+                if extended_context {
+                    "md_title_extended"
+                } else {
+                    "md_title"
+                }
+            }
         }
     }
 
@@ -143,10 +484,18 @@ impl ContentGenerator for MarkdownGenerator {
         self.segment_type.clone()
     }
 
-    fn process_llm_result(&self, content: &str) -> String {
-        match self.segment_type {
-            SegmentType::Formula => format!("${}$", content),
-            _ => content.to_string(),
+    async fn generate_llm(
+        &self,
+        params: &LlmGenerationParams<'_>,
+        tracer: &opentelemetry::global::BoxedTracer,
+        parent_context: &Context,
+    ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+        let content = self.process_llm(params, tracer, parent_context).await?;
+
+        if self.segment_type() == SegmentType::Formula {
+            Ok(format!("${content}$"))
+        } else {
+            Ok(content)
         }
     }
 }
@@ -169,126 +518,226 @@ fn convert_checkboxes_markdown(content: &str) -> String {
         .replace(":unselected:", "[ ]")
 }
 
-async fn generate_content<T: ContentGenerator>(
-    segment_id: &str,
-    image_folder_location: &str,
-    generator: &T,
-    auto_content: &str,
-    segment_image: Option<Arc<NamedTempFile>>,
-    generation_strategy: &GenerationStrategy,
-    override_auto: String,
-    llm_fallback_content: Option<String>,
+async fn apply_generation_strategy<T: ContentGenerator>(
+    params: &StrategyParams<'_, T>,
+    tracer: &opentelemetry::global::BoxedTracer,
+    parent_context: &Context,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-    if !override_auto.is_empty() && generation_strategy == &GenerationStrategy::Auto {
-        return Ok(override_auto);
+    if !params.override_auto.is_empty() && params.generation_strategy == &GenerationStrategy::Auto {
+        return Ok(params.override_auto.clone());
     }
 
-    if segment_image.is_none() {
-        return Ok(generator.generate_auto(auto_content));
+    if params.segment_image.is_none() {
+        // Cannot use LLM without segment image, fallback to auto
+        return Ok(params.generator.generate_auto(params.auto_content));
     }
+    let segment_image = params.segment_image.clone().unwrap(); // Safe unwrap due to check above
 
-    match generation_strategy {
+    match params.generation_strategy {
         GenerationStrategy::LLM => {
-            let mut values = HashMap::new();
-            let file_url = get_file_url(
-                segment_image.as_ref().unwrap(),
-                &format!("{}/{}.jpg", image_folder_location, segment_id),
-            )
-            .await?;
-            values.insert("image_url".to_string(), file_url);
-            let messages = create_messages_from_template(generator.template_key(), &values)?;
-            let result = match (generator.template_key(), generator.segment_type()) {
-                (_, SegmentType::Formula) => {
-                    llm::try_extract_from_llm(messages, Some("latex"), llm_fallback_content).await?
-                }
-                (key, _) if key.starts_with("md_") => {
-                    llm::try_extract_from_llm(messages, Some("markdown"), llm_fallback_content)
-                        .await?
-                }
-                _ => {
-                    llm::try_extract_from_llm(messages, Some("html"), llm_fallback_content).await?
-                }
-            };
-
-            Ok(generator.process_llm_result(&result))
+            let llm_params = LlmGenerationParams::from_strategy_params(params, segment_image);
+            Ok(params
+                .generator
+                .generate_llm(&llm_params, tracer, parent_context)
+                .await?)
         }
-        GenerationStrategy::Auto => Ok(generator.generate_auto(auto_content)),
+        GenerationStrategy::Auto => Ok(params.generator.generate_auto(params.auto_content)),
     }
 }
 
 async fn generate_html(
-    segment: &Segment,
-    segment_image: Option<Arc<NamedTempFile>>,
-    generation_strategy: &GenerationStrategy,
-    fallback_content: Option<String>,
-    image_folder_location: &str,
+    params: &ContentGenerationParams<'_>,
+    tracer: &opentelemetry::global::BoxedTracer,
+    parent_context: &Context,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    let mut span = tracer.start_with_context(
+        otel_config::SpanName::GenerateHtml.to_string(),
+        parent_context,
+    );
+    span.set_attribute(opentelemetry::KeyValue::new(
+        "error_handling",
+        params.configuration.error_handling.to_string(),
+    ));
+
+    if let Some(segment_id) = parent_context.baggage().get("segment_id") {
+        span.set_attribute(opentelemetry::KeyValue::new(
+            "segment_id",
+            segment_id.to_string(),
+        ));
+    }
+    if let Some(segment_type) = parent_context.baggage().get("segment_type") {
+        span.set_attribute(opentelemetry::KeyValue::new(
+            "segment_type",
+            segment_type.to_string(),
+        ));
+    }
+
+    let ctx = parent_context.with_span(span);
+
     let generator = HtmlGenerator {
-        segment_type: segment.segment_type.clone(),
+        segment_type: params.segment.segment_type.clone(),
     };
-    Ok(html::clean_img_tags(
-        &generate_content(
-            &segment.segment_id,
-            image_folder_location,
-            &generator,
-            &segment.content.clone(),
-            segment_image,
-            generation_strategy,
-            segment.html.clone(),
-            fallback_content,
-        )
-        .await?,
-    ))
+
+    let strategy_params =
+        StrategyParams::from_content_params(params, &generator, params.segment.html.clone());
+
+    let result = html::clean_img_tags(
+        &apply_generation_strategy(&strategy_params, tracer, &ctx)
+            .await
+            .inspect_err(|e| {
+                ctx.span()
+                    .set_status(opentelemetry::trace::Status::error(e.to_string()));
+                ctx.span().record_error(e.as_ref());
+                ctx.span()
+                    .set_attribute(opentelemetry::KeyValue::new("error", e.to_string()));
+            })?,
+    );
+
+    Ok(result)
 }
 
 async fn generate_markdown(
-    segment: &Segment,
-    segment_image: Option<Arc<NamedTempFile>>,
-    generation_strategy: &GenerationStrategy,
-    fallback_content: Option<String>,
-    image_folder_location: &str,
+    params: &ContentGenerationParams<'_>,
+    tracer: &opentelemetry::global::BoxedTracer,
+    parent_context: &Context,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    let mut span = tracer.start_with_context(
+        otel_config::SpanName::GenerateMarkdown.to_string(),
+        parent_context,
+    );
+    span.set_attribute(opentelemetry::KeyValue::new(
+        "error_handling",
+        params.configuration.error_handling.to_string(),
+    ));
+
+    if let Some(segment_id) = parent_context.baggage().get("segment_id") {
+        span.set_attribute(opentelemetry::KeyValue::new(
+            "segment_id",
+            segment_id.to_string(),
+        ));
+    }
+    if let Some(segment_type) = parent_context.baggage().get("segment_type") {
+        span.set_attribute(opentelemetry::KeyValue::new(
+            "segment_type",
+            segment_type.to_string(),
+        ));
+    }
+
+    let ctx = parent_context.with_span(span);
+
     let generator = MarkdownGenerator {
-        segment_type: segment.segment_type.clone(),
+        segment_type: params.segment.segment_type.clone(),
     };
-    Ok(markdown::clean_img_tags(
-        &generate_content(
-            &segment.segment_id,
-            image_folder_location,
-            &generator,
-            &segment.content.clone(),
-            segment_image,
-            generation_strategy,
-            segment.markdown.clone(),
-            fallback_content,
-        )
-        .await?,
-    ))
+
+    let strategy_params =
+        StrategyParams::from_content_params(params, &generator, params.segment.markdown.clone());
+
+    let result = markdown::clean_img_tags(
+        &apply_generation_strategy(&strategy_params, tracer, &ctx)
+            .await
+            .inspect_err(|e| {
+                ctx.span()
+                    .set_status(opentelemetry::trace::Status::error(e.to_string()));
+                ctx.span().record_error(e.as_ref());
+                ctx.span()
+                    .set_attribute(opentelemetry::KeyValue::new("error", e.to_string()));
+            })?,
+    );
+
+    Ok(result)
 }
 
 async fn generate_llm(
-    segment: &Segment,
-    segment_image: Option<Arc<NamedTempFile>>,
-    llm_prompt: Option<String>,
-    llm_fallback_content: Option<String>,
-    image_folder_location: &str,
+    params: &StandaloneLlmParams<'_>,
+    tracer: &opentelemetry::global::BoxedTracer,
+    parent_context: &Context,
 ) -> Result<Option<String>, Box<dyn std::error::Error + Send + Sync>> {
-    if llm_prompt.is_none() || segment_image.is_none() {
+    if params.llm_prompt.is_none() || params.segment_image.is_none() {
         return Ok(None);
     }
 
+    let mut span = tracer.start_with_context(
+        otel_config::SpanName::GenerateLlm.to_string(),
+        parent_context,
+    );
+    span.set_attribute(opentelemetry::KeyValue::new(
+        "error_handling",
+        params.configuration.error_handling.to_string(),
+    ));
+
+    if let Some(segment_id) = parent_context.baggage().get("segment_id") {
+        span.set_attribute(opentelemetry::KeyValue::new(
+            "segment_id",
+            segment_id.to_string(),
+        ));
+    }
+    if let Some(segment_type) = parent_context.baggage().get("segment_type") {
+        span.set_attribute(opentelemetry::KeyValue::new(
+            "segment_type",
+            segment_type.to_string(),
+        ));
+    }
+
+    let ctx = parent_context.with_span(span);
+
+    let segment_image = params.segment_image.clone().unwrap(); // Safe unwrap
+
     let mut values = HashMap::new();
-    let file_url = get_file_url(
-        segment_image.as_ref().unwrap(),
-        &format!("{}/{}.jpg", image_folder_location, segment.segment_id),
+    let segment_image_url = get_file_url(
+        &segment_image,
+        &format!(
+            "{}/{}.jpg",
+            params.image_folder_location, params.segment.segment_id
+        ),
     )
     .await?;
-    values.insert("segment_type".to_string(), segment.segment_type.to_string());
-    values.insert("user_prompt".to_string(), llm_prompt.unwrap());
-    values.insert("image_url".to_string(), file_url);
+    values.insert(
+        "segment_type".to_string(),
+        params.segment.segment_type.to_string(),
+    );
+    values.insert(
+        "user_prompt".to_string(),
+        params.llm_prompt.clone().unwrap(),
+    );
+    values.insert("image_url".to_string(), segment_image_url);
 
-    let messages = create_messages_from_template("llm_segment", &values)?;
-    let result = llm::try_extract_from_llm(messages, None, llm_fallback_content).await?;
+    let template_key = if params.extended_context {
+        if let Some(page_img) = &params.page_image {
+            // Use the page image as is
+            let page_image_url = get_file_url(
+                page_img,
+                &format!(
+                    "{}/{}_page.jpg",
+                    params.image_folder_location, params.segment.segment_id
+                ),
+            )
+            .await?;
+            values.insert("page_image_url".to_string(), page_image_url);
+            "llm_segment_extended"
+        } else {
+            "llm_segment"
+        }
+    } else {
+        "llm_segment"
+    };
+
+    let messages = create_messages_from_template(template_key, &values)?;
+    let result = llm::try_extract_from_llm(
+        messages,
+        None, // LLM field extraction doesn't assume a fence type by default
+        params.llm_fallback_content.clone(),
+        params.configuration.llm_processing.clone(),
+        tracer,
+        &ctx,
+    )
+    .await
+    .inspect_err(|e| {
+        ctx.span()
+            .set_status(opentelemetry::trace::Status::error(e.to_string()));
+        ctx.span().record_error(e.as_ref());
+        ctx.span()
+            .set_attribute(opentelemetry::KeyValue::new("error", e.to_string()));
+    })?;
 
     Ok(Some(result))
 }
@@ -297,9 +746,15 @@ async fn process_segment(
     segment: &mut Segment,
     configuration: &Configuration,
     segment_image: Option<Arc<NamedTempFile>>,
+    page_image: Option<Arc<NamedTempFile>>,
     image_folder_location: &str,
+    tracer: &opentelemetry::global::BoxedTracer,
+    parent_context: &Context,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let (html_strategy, markdown_strategy, llm_prompt) = match segment.segment_type.clone() {
+    let (html_strategy, markdown_strategy, llm_prompt, extended_context) = match segment
+        .segment_type
+        .clone()
+    {
         SegmentType::Table | SegmentType::Formula | SegmentType::Page => {
             let config: &LlmGenerationConfig = match segment.segment_type {
                 SegmentType::Table => configuration.segment_processing.table.as_ref().unwrap(),
@@ -307,12 +762,22 @@ async fn process_segment(
                 SegmentType::Page => configuration.segment_processing.page.as_ref().unwrap(),
                 _ => unreachable!(),
             };
-            (&config.html, &config.markdown, &config.llm)
+            (
+                &config.html,
+                &config.markdown,
+                &config.llm,
+                config.extended_context,
+            )
         }
         SegmentType::Picture => {
             let config: &PictureGenerationConfig =
                 configuration.segment_processing.picture.as_ref().unwrap();
-            (&config.html, &config.markdown, &config.llm)
+            (
+                &config.html,
+                &config.markdown,
+                &config.llm,
+                config.extended_context,
+            )
         }
         segment_type => {
             let config: &AutoGenerationConfig = match segment_type {
@@ -342,7 +807,12 @@ async fn process_segment(
                     .unwrap(),
                 _ => unreachable!(),
             };
-            (&config.html, &config.markdown, &config.llm)
+            (
+                &config.html,
+                &config.markdown,
+                &config.llm,
+                config.extended_context,
+            )
         }
     };
 
@@ -355,29 +825,119 @@ async fn process_segment(
         _ => (None, None, None),
     };
 
-    let (html, markdown, llm) = futures::try_join!(
-        generate_html(
-            segment,
-            segment_image.clone(),
-            html_strategy,
-            fallback_html,
-            image_folder_location,
-        ),
-        generate_markdown(
-            segment,
-            segment_image.clone(),
-            markdown_strategy,
-            fallback_markdown,
-            image_folder_location,
-        ),
-        generate_llm(
-            segment,
-            segment_image.clone(),
-            llm_prompt.clone(),
-            fallback_llm,
-            image_folder_location,
-        )
-    )?;
+    let mut span = tracer.start_with_context(
+        otel_config::SpanName::ProcessSegment.to_string(),
+        parent_context,
+    );
+    span.set_attribute(opentelemetry::KeyValue::new(
+        "segment_id",
+        segment.segment_id.clone(),
+    ));
+    span.set_attribute(opentelemetry::KeyValue::new(
+        "segment_type",
+        segment.segment_type.to_string(),
+    ));
+
+    let context = parent_context.with_baggage(vec![
+        opentelemetry::KeyValue::new("segment_type", segment.segment_type.to_string()),
+        opentelemetry::KeyValue::new("segment_id", segment.segment_id.clone()),
+    ]);
+
+    let _guard = context.with_span(span).attach();
+
+    // Process HTML with error handling using new parameter struct
+    let html_params = ContentGenerationParams::new(
+        segment,
+        segment_image.clone(),
+        page_image.clone(),
+        html_strategy,
+        extended_context,
+        fallback_html,
+        image_folder_location,
+        configuration,
+    );
+
+    // Process Markdown with error handling using new parameter struct
+    let markdown_params = ContentGenerationParams::new(
+        segment,
+        segment_image.clone(),
+        page_image.clone(),
+        markdown_strategy,
+        extended_context,
+        fallback_markdown,
+        image_folder_location,
+        configuration,
+    );
+
+    // Process LLM with error handling using new parameter struct
+    let llm_params = StandaloneLlmParams::new(
+        segment,
+        segment_image,
+        page_image,
+        llm_prompt.clone(),
+        extended_context,
+        fallback_llm,
+        image_folder_location,
+        configuration,
+    );
+
+    let context = Context::current();
+
+    let html_future = async {
+        match generate_html(&html_params, tracer, &context).await {
+            Ok(content) => Ok(content),
+            Err(e) => {
+                if configuration.error_handling == ErrorHandlingStrategy::Continue {
+                    let html_generator = HtmlGenerator {
+                        segment_type: segment.segment_type.clone(),
+                    };
+                    Ok(html_generator.generate_auto(&segment.content))
+                } else {
+                    Err(e)
+                }
+            }
+        }
+    };
+
+    let markdown_future = async {
+        match generate_markdown(&markdown_params, tracer, &context).await {
+            Ok(content) => Ok(content),
+            Err(e) => {
+                if configuration.error_handling == ErrorHandlingStrategy::Continue {
+                    let markdown_generator = MarkdownGenerator {
+                        segment_type: segment.segment_type.clone(),
+                    };
+                    Ok(markdown_generator.generate_auto(&segment.content))
+                } else {
+                    Err(e)
+                }
+            }
+        }
+    };
+
+    let llm_future = async {
+        match generate_llm(&llm_params, tracer, &context).await {
+            Ok(content) => Ok(content),
+            Err(e) => {
+                if configuration.error_handling == ErrorHandlingStrategy::Continue {
+                    Ok(None)
+                } else {
+                    Err(e)
+                }
+            }
+        }
+    };
+
+    let (html, markdown, llm) = tokio::try_join!(html_future, markdown_future, llm_future)
+        .inspect_err(|e| {
+            context
+                .span()
+                .set_status(opentelemetry::trace::Status::error(e.to_string()));
+            context.span().record_error(e.as_ref());
+            context
+                .span()
+                .set_attribute(opentelemetry::KeyValue::new("error", e.to_string()));
+        })?;
 
     segment.content = convert_checkboxes(&segment.content);
     segment.html = convert_checkboxes_html(&html);
@@ -390,42 +950,56 @@ async fn process_segment(
 ///
 /// This function will generate the html, llm and markdown fields for all the segments in parallel.
 /// Depending on the configuration, each segment will either be processed using heuristic or by a LLM.
-pub async fn process(pipeline: &mut Pipeline) -> Result<(), Box<dyn std::error::Error>> {
-    let mut task = pipeline.get_task()?;
-    task.update(
-        Some(Status::Processing),
-        Some("Processing segments".to_string()),
-        None,
-        None,
-        None,
-        None,
-        None,
-    )
-    .await?;
-    let configuration = pipeline.get_task()?.configuration.clone();
+pub async fn process(
+    pipeline: &mut Pipeline,
+    tracer: &opentelemetry::global::BoxedTracer,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let task = pipeline.get_task()?;
+    let configuration = task.configuration.clone();
     let segment_images = pipeline.segment_images.clone();
-    let futures: Vec<_> = pipeline
-        .chunks
+
+    // Simply clone out the Option<Vec<…>> and default to an empty Vec if missing
+    let page_images: Vec<_> = pipeline.page_images.clone().unwrap_or_default();
+
+    // Clone the chunks to avoid modifying originals until processing succeeds
+    let mut cloned_chunks = pipeline.chunks.clone();
+
+    let parent_context = Context::current();
+    let futures: Vec<_> = cloned_chunks
         .iter_mut()
         .flat_map(|chunk| {
             chunk.segments.iter_mut().map(|segment| {
+                let page_index = if segment.page_number > 0 {
+                    (segment.page_number - 1) as usize
+                } else {
+                    0
+                };
+                let segment_page_image = page_images.get(page_index).cloned();
+                let segment_image_ref = segment_images.get(&segment.segment_id);
+                let segment_image_cloned = segment_image_ref.map(|r| r.value().clone());
                 process_segment(
                     segment,
                     &configuration,
-                    segment_images.get(&segment.segment_id).map(|r| r.clone()),
+                    segment_image_cloned,
+                    segment_page_image,
                     &task.image_folder_location,
+                    tracer,
+                    &parent_context,
                 )
             })
         })
         .collect();
 
+    println!("Processing {:?} segments concurrently", futures.len());
     match futures::future::try_join_all(futures).await {
-        Ok(_) => (),
+        Ok(_) => {
+            // Only update the pipeline chunks if all processing was successful
+            pipeline.chunks = cloned_chunks;
+            Ok(())
+        }
         Err(e) => {
             eprintln!("Error processing segments: {:?}", e);
-            return Err(e.to_string().into());
+            Err(e.to_string().into())
         }
     }
-
-    Ok(())
 }

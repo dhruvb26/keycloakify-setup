@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.3.2](https://github.com/lumina-ai-inc/chunkr/compare/chunkr-chart-v1.3.1...chunkr-chart-v1.3.2) (2025-05-22)
+
+
+### Bug Fixes
+
+* **core:** Auto-fix clippy warnings ([#518](https://github.com/lumina-ai-inc/chunkr/issues/518)) ([238f47f](https://github.com/lumina-ai-inc/chunkr/commit/238f47fdaf5d2e62d12448424d1018eb1803b8f8))
+
+## [1.3.1](https://github.com/lumina-ai-inc/chunkr/compare/chunkr-chart-v1.3.0...chunkr-chart-v1.3.1) (2025-04-18)
+
+
+### Bug Fixes
+
+* Config map in helm chart ([5a08085](https://github.com/lumina-ai-inc/chunkr/commit/5a08085e3c72647dd0833cdcc5574e99948298d5))
+
+## [1.3.0](https://github.com/lumina-ai-inc/chunkr/compare/chunkr-chart-v1.2.0...chunkr-chart-v1.3.0) (2025-04-15)
+
+
+### Features
+
+* Allow users to choose an LLM model to use for `segment_processing` by setting the `llm_processing.model_id` param in the POST and PATCH request. The available models can be configured using the `models.yaml` file. ([#437](https://github.com/lumina-ai-inc/chunkr/issues/437)) ([ea526c4](https://github.com/lumina-ai-inc/chunkr/commit/ea526c4c48692ae5d8a9ba00b70008ce238a4c14))
+
 ## [1.2.0](https://github.com/lumina-ai-inc/chunkr/compare/chunkr-chart-v1.1.0...chunkr-chart-v1.2.0) (2025-03-27)
 
 

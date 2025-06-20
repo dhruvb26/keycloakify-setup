@@ -8,6 +8,7 @@ use actix_web::middleware::Logger;
 use actix_web::Error;
 use actix_web::HttpRequest;
 use actix_web::{web, App, HttpServer};
+use actix_web_opentelemetry::RequestTracing;
 use diesel_migrations::{embed_migrations, EmbeddedMigrations, MigrationHarness};
 use env_logger::Env;
 use utoipa::{
@@ -29,6 +30,7 @@ use jobs::init::init_jobs;
 use middleware::auth::AuthMiddlewareFactory;
 use routes::github::get_github_repo_info;
 use routes::health::health_check;
+use routes::llm::get_models_ids;
 use routes::stripe::{
     create_checkout_session, create_setup_intent, create_stripe_session,
     get_billing_portal_session, get_checkout_session, get_invoice_detail, get_monthly_usage,
@@ -131,6 +133,13 @@ pub async fn get_openapi_spec_handler() -> impl actix_web::Responder {
 
 pub fn main() -> std::io::Result<()> {
     actix_web::rt::System::new().block_on(async move {
+        if let Err(e) = configs::otel_config::Config::from_env()
+            .map(|config| config.init_tracer(configs::otel_config::ServiceName::Server))
+            .map_err(|e| e.to_string())
+        {
+            eprintln!("Failed to initialize OpenTelemetry tracer: {}", e);
+        }
+
         env_logger::init_from_env(Env::default().default_filter_or("info"));
         initialize().await;
         run_migrations(&std::env::var("PG__URL").expect("PG__URL must be set in .env file"));
@@ -159,6 +168,7 @@ pub fn main() -> std::io::Result<()> {
         let timeout = std::time::Duration::from_secs(timeout.try_into().unwrap());
         HttpServer::new(move || {
             let mut app = App::new()
+                .wrap(RequestTracing::new())
                 .wrap(Cors::permissive())
                 .wrap(Logger::default())
                 .wrap(Logger::new("%a %{User-Agent}i"))
@@ -173,6 +183,7 @@ pub fn main() -> std::io::Result<()> {
                 .route("/", web::get().to(health_check))
                 .route("/health", web::get().to(health_check))
                 .route("/github", web::get().to(get_github_repo_info))
+                .route("/llm/models", web::get().to(get_models_ids))
                 .service(
                     SwaggerUi::new("/swagger-ui/{_:.*}")
                         .url("/docs/openapi.json", ApiDoc::openapi()),

@@ -6,9 +6,65 @@ use crate::utils::services::pdf::count_pages;
 use crate::utils::storage::services::download_to_tempfile;
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
+use opentelemetry::trace::{Span, TraceContextExt, Tracer};
+use opentelemetry::Context;
 use std::error::Error;
 use std::sync::Arc;
+use strum_macros::{Display, EnumString};
 use tempfile::NamedTempFile;
+
+#[cfg(feature = "memory_profiling")]
+use memtrack::track_mem;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Display, EnumString)]
+pub enum PipelineStep {
+    #[cfg(feature = "azure")]
+    #[strum(serialize = "azure_analysis")]
+    AzureAnalysis,
+    #[strum(serialize = "chunking")]
+    Chunking,
+    #[strum(serialize = "chunkr_analysis")]
+    ChunkrAnalysis,
+    #[strum(serialize = "convert_to_images")]
+    ConvertToImages,
+    #[strum(serialize = "crop")]
+    Crop,
+    #[strum(serialize = "segment_processing")]
+    SegmentProcessing,
+}
+
+pub trait PipelineStepMessages {
+    fn start_message(&self) -> String;
+    fn error_message(&self) -> String;
+}
+
+impl PipelineStepMessages for PipelineStep {
+    fn start_message(&self) -> String {
+        match self {
+            #[cfg(feature = "azure")]
+            PipelineStep::AzureAnalysis => "Running Azure analysis".to_string(),
+            PipelineStep::Chunking => "Chunking".to_string(),
+            PipelineStep::ChunkrAnalysis => "Running Chunkr analysis".to_string(),
+            PipelineStep::ConvertToImages => "Converting pages to images".to_string(),
+            PipelineStep::Crop => "Cropping segments".to_string(),
+            PipelineStep::SegmentProcessing => "Processing segments".to_string(),
+        }
+    }
+
+    fn error_message(&self) -> String {
+        match self {
+            #[cfg(feature = "azure")]
+            PipelineStep::AzureAnalysis => "Failed to run Azure analysis".to_string(),
+            PipelineStep::Chunking => "Failed to chunk".to_string(),
+            PipelineStep::ChunkrAnalysis => "Failed to run Chunkr analysis".to_string(),
+            PipelineStep::ConvertToImages => "Failed to convert pages to images".to_string(),
+            PipelineStep::Crop => "Failed to crop segments".to_string(),
+            PipelineStep::SegmentProcessing => {
+                "Failed to process segments - LLM processing error".to_string()
+            }
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct Pipeline {
@@ -41,7 +97,17 @@ impl Pipeline {
     }
 
     pub async fn init(&mut self, task_payload: TaskPayload) -> Result<(), Box<dyn Error>> {
-        let mut task = Task::get(&task_payload.task_id, &task_payload.user_id).await?;
+        let mut task = Task::get(&task_payload.task_id, &task_payload.user_info.user_id).await?;
+        task.update(
+            Some(Status::Processing),
+            Some("Task started".to_string()),
+            None,
+            None,
+            Some(Utc::now()),
+            None,
+            None,
+        )
+        .await?;
         if task.status == Status::Cancelled {
             if task_payload.previous_configuration.is_some() {
                 task.update(
@@ -86,10 +152,10 @@ impl Pipeline {
         let page_count = count_pages(self.pdf_file.as_ref().unwrap())?;
         task.update(
             Some(Status::Processing),
-            Some("Task started".to_string()),
+            Some("Task initialized".to_string()),
             None,
             Some(page_count),
-            Some(Utc::now()),
+            None,
             None,
             None,
         )
@@ -136,6 +202,118 @@ impl Pipeline {
         } else {
             Ok(self.pdf_file.as_ref().unwrap().clone())
         }
+    }
+
+    /// Execute a step in the pipeline
+    #[cfg_attr(feature = "memory_profiling", track_mem)]
+    pub async fn execute_step(
+        &mut self,
+        step: PipelineStep,
+        max_retries: u32,
+        tracer: &opentelemetry::global::BoxedTracer,
+    ) -> Result<(), Box<dyn Error>> {
+        let start = std::time::Instant::now();
+        let mut task = self.get_task()?;
+        let mut retries = 0;
+        let mut last_error: Option<String> = None;
+        while retries < max_retries {
+            let mut span = tracer.start_with_context(step.to_string(), &Context::current());
+            span.set_attribute(opentelemetry::KeyValue::new(
+                "retry_count",
+                retries.to_string(),
+            ));
+            let _guard = Context::current().with_span(span).attach();
+
+            // Update task status to processing and message to step start message
+            let message = match retries > 0 {
+                true => format!(
+                    "{} | retry {}/{}",
+                    step.start_message(),
+                    retries + 1,
+                    max_retries
+                ),
+                false => step.start_message(),
+            };
+            println!("Executing step: {}", message);
+            task.update(
+                Some(Status::Processing),
+                Some(message),
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .await?;
+
+            // Execute step
+            let result = match step {
+                #[cfg(feature = "azure")]
+                PipelineStep::AzureAnalysis => crate::pipeline::azure_analysis::process(self).await,
+                PipelineStep::Chunking => crate::pipeline::chunking::process(self).await,
+                PipelineStep::ConvertToImages => {
+                    crate::pipeline::convert_to_images::process(self).await
+                }
+                PipelineStep::Crop => crate::pipeline::crop::process(self).await,
+                PipelineStep::ChunkrAnalysis => {
+                    crate::pipeline::chunkr_analysis::process(self).await
+                }
+                PipelineStep::SegmentProcessing => {
+                    crate::pipeline::segment_processing::process(self, tracer).await
+                }
+            };
+
+            let duration = start.elapsed();
+
+            // Check if step succeeded or failed
+            match result {
+                Ok(_) => {
+                    println!(
+                        "Step {} took {:?} with page count {:?}",
+                        step,
+                        duration,
+                        self.get_task()?.page_count.unwrap_or(0)
+                    );
+                    Context::current().span().end();
+                    return Ok(());
+                }
+                Err(e) => {
+                    println!("Error {} in step {}", e, step);
+                    last_error = Some(e.to_string());
+                    retries += 1;
+                    let context = Context::current();
+                    context
+                        .span()
+                        .set_status(opentelemetry::trace::Status::error(e.to_string()));
+                    context.span().record_error(e.as_ref());
+                    context
+                        .span()
+                        .set_attribute(opentelemetry::KeyValue::new("error", e.to_string()));
+                    context.span().end();
+
+                    if retries < max_retries {
+                        task.update(
+                            Some(Status::Processing),
+                            Some(step.error_message()),
+                            None,
+                            None,
+                            None,
+                            None,
+                            None,
+                        )
+                        .await?;
+
+                        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                    }
+                }
+            }
+        }
+        // If step failed after max_retries, complete task with failed status and error message
+        self.complete(Status::Failed, Some(step.error_message()))
+            .await?;
+        Err(last_error
+            .unwrap_or("Maximum retries exceeded".into())
+            .into())
     }
 
     pub async fn complete(
@@ -210,7 +388,7 @@ impl Pipeline {
                 .await?;
                 Ok(())
             } else {
-                return revert_to_previous(&mut task, &task_payload).await;
+                revert_to_previous(&mut task, &task_payload).await
             }
         } else {
             match update_success(
