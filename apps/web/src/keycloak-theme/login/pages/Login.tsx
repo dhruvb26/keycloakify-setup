@@ -7,6 +7,7 @@ import type { PageProps } from "keycloakify/login/pages/PageProps";
 import { getKcClsx, type KcClsx } from "keycloakify/login/lib/kcClsx";
 import type { KcContext } from "../KcContext";
 import type { I18n } from "../i18n";
+import { Button } from "@/components/ui/button";
 
 export default function Login(props: PageProps<Extract<KcContext, { pageId: "login.ftl" }>, I18n>) {
     const { kcContext, i18n, doUseDefaultCss, Template, classes } = props;
@@ -177,15 +178,54 @@ export default function Login(props: PageProps<Extract<KcContext, { pageId: "log
 
                             <div id="kc-form-buttons" className={kcClsx("kcFormGroupClass")}>
                                 <input type="hidden" id="id-hidden-input" name="credentialId" value={auth.selectedCredential} />
-                                <input
+                                <button
                                     tabIndex={7}
                                     disabled={isLoginButtonDisabled}
-                                    className={kcClsx("kcButtonClass", "kcButtonPrimaryClass", "kcButtonBlockClass", "kcButtonLargeClass")}
                                     name="login"
                                     id="kc-login"
                                     type="submit"
                                     value={msgStr("doLogIn")}
-                                />
+                                    style={{
+                                        width: '100%',
+                                        height: '40px',
+                                        backgroundColor: 'hsl(0 0% 9%)',
+                                        color: 'hsl(0 0% 98%)',
+                                        border: 'none',
+                                        borderRadius: '6px',
+                                        fontSize: '14px',
+                                        fontWeight: '500',
+                                        cursor: 'pointer',
+                                        transition: 'all 0.2s',
+                                        boxShadow: '0 1px 2px 0 rgb(0 0 0 / 0.05)',
+                                        display: 'inline-flex',
+                                        alignItems: 'center',
+                                        justifyContent: 'center',
+                                        gap: '8px',
+                                        whiteSpace: 'nowrap'
+                                    }}
+                                    onMouseEnter={(e) => {
+                                        if (!isLoginButtonDisabled) {
+                                            e.currentTarget.style.backgroundColor = 'hsl(0 0% 9% / 0.9)';
+                                        }
+                                    }}
+                                    onMouseLeave={(e) => {
+                                        if (!isLoginButtonDisabled) {
+                                            e.currentTarget.style.backgroundColor = 'hsl(0 0% 9%)';
+                                        }
+                                    }}
+                                    onFocus={(e) => {
+                                        e.currentTarget.style.outline = 'none';
+                                        e.currentTarget.style.boxShadow = '0 0 0 1px hsl(0 0% 3.9%)';
+                                    }}
+                                    onBlur={(e) => {
+                                        e.currentTarget.style.boxShadow = '0 1px 2px 0 rgb(0 0 0 / 0.05)';
+                                    }}
+                                >
+                                    {msgStr("doLogIn")}
+                                </button>
+                                <Button>
+                                    {msgStr("doLogIn")}
+                                </Button>
                             </div>
                         </form>
                     )}
